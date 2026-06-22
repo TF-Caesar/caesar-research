@@ -1,0 +1,6 @@
+*.log
+.DS_Store
+.caesar-monitor
+.env
+dist
+node_modules
