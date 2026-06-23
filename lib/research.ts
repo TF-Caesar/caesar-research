@@ -117,12 +117,18 @@ export interface SourceLine {
   capturedISO?: string;
 }
 
-/** Format the numbered Sources list. Only includes sources actually read. */
+/**
+ * Format the numbered Sources list. Only includes sources actually READ —
+ * searchAndRead emits a citation for every search hit but reads only the top N,
+ * so we drop search-only results (no captureTime and no text) and renumber from 1.
+ */
 export function formatSources(citations: Citation[]): SourceLine[] {
-  return citations.map((c, i) => ({
-    index: i + 1,
-    title: (c.title || c.canonicalUrl || 'Untitled').trim(),
-    url: c.canonicalUrl,
-    capturedISO: c.captureTime,
-  }));
+  return citations
+    .filter((c) => Boolean(c.captureTime) || Boolean(c.text && c.text.trim()))
+    .map((c, i) => ({
+      index: i + 1,
+      title: (c.title || c.canonicalUrl || 'Untitled').trim(),
+      url: c.canonicalUrl,
+      capturedISO: c.captureTime,
+    }));
 }
