@@ -67,6 +67,7 @@ export async function main(argv: string[]): Promise<number> {
       maxResults: args.maxResults,
       readTopN: args.readTopN,
       mode: 'research',
+      minScore: 0.3, // drop low-confidence / unscored (gibberish) results
     });
     citations = result.citations;
   } catch (err) {
