@@ -79,6 +79,7 @@ export class CaesarClient {
     const resp: any = await this.client.search(query, {
       maxResults: options.maxResults,
       mode: options.mode,
+      verbosity: 'standard', // ensure results carry a relevance score (for minScore filtering)
       ...(Object.keys(extraBody).length ? { extraBody } : {}),
     });
     const results: SearchResultItem[] = (resp?.results ?? []).map((r: any) => {
