@@ -95,6 +95,18 @@ describe('summarize', () => {
     expect(unique.size).toBe(out.length);
   });
 
+  it('drops JSON / metadata fragments so they never become a summary bullet', () => {
+    // The JSON sits on its own line AND echoes query terms, so it would otherwise
+    // out-score real prose and surface as a bullet.
+    const withJson: Citation[] = [{
+      rank: 1, title: 'X', canonicalUrl: 'https://x.com', docId: 'd1',
+      text: 'Argentina won the 2022 FIFA World Cup in Qatar after a dramatic final.\n{"event":"2022 FIFA World Cup","winner":"Argentina","fifa_world_cup":true,"id":"abc-123"}\nLionel Messi lifted the trophy for Argentina national team. '.repeat(2),
+    }];
+    const out = summarize(withJson, 'Who won the 2022 FIFA World Cup?', 5);
+    expect(out.join(' ')).toMatch(/Argentina/);
+    expect(out.join(' ')).not.toMatch(/\{|\}|fifa_world_cup|"winner"/);
+  });
+
   it('grounds on full read text (citation.text), not passage alone', () => {
     // Anonymous tier: no passages, only text. summarize must still work.
     const noPassage: Citation[] = [{

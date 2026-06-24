@@ -52,11 +52,20 @@ export interface ScoredSentence {
   rank: number; // source rank this sentence came from
 }
 
+/** Reject JSON / metadata / code-looking fragments so they never become a bullet. */
+export function isProse(s: string): boolean {
+  const t = s.trim();
+  if (/^[{[]/.test(t)) return false;                                  // starts like JSON / an array
+  if (/[{}]/.test(t) && /["'][\w $.-]+["']\s*:/.test(t)) return false; // inline object with "key": pairs
+  if ((t.match(/[a-zA-Z ]/g) ?? []).length < t.length * 0.55) return false; // mostly symbols / digits
+  return true;
+}
+
 function splitSentences(text: string): string[] {
   return text
     .split(/\n+|(?<=[.!?])\s+/) // line breaks AND sentence ends
     .map(cleanMarkdown)
-    .filter((s) => s.length > 25 && s.length < 400);
+    .filter((s) => s.length > 25 && s.length < 400 && isProse(s));
 }
 
 /** Score a single sentence against the question's terms (bestSnippet scorer). */
