@@ -18,7 +18,18 @@ export interface Citation {
   rank: number; title: string; canonicalUrl: string; docId: string;
   passageId?: string; captureId?: string; captureTime?: string; passage?: string; text?: string; score?: number;
 }
-export interface SearchAndReadResult { evidence: string; citations: Citation[]; searchId?: string; }
+export interface SearchAndReadResult {
+  evidence: string;
+  citations: Citation[];
+  searchId?: string;
+  /**
+   * Search results BEFORE the minScore filter. Lets callers distinguish "the
+   * web had nothing" from "results existed but were filtered/unreadable" —
+   * Caesar omits scores under load, so a minScore floor can empty citations
+   * even when the search succeeded.
+   */
+  resultCount: number;
+}
 
 const DEFAULT_BASE_URL = 'https://alpha.api.trycaesar.com';
 
@@ -32,11 +43,18 @@ function tidy(s: string): string {
     .trim();
 }
 
-/** Pick the passage most relevant to the query (simple word overlap). */
+/**
+ * Pick the passage most relevant to the query (simple word overlap). Returns
+ * undefined when NO passage shares a word with the query — a zero-overlap
+ * passage displayed as "the supporting quote" would be worse than no quote.
+ */
 function pickPassage(passages: ReadPassage[], query: string): string | undefined {
   const qWords = (query.toLowerCase().match(/[a-z0-9]{3,}/g) ?? []);
+  // No scoreable query words -> nothing to rank by; Caesar's passages are
+  // already query-relevant (read() passes the query), so take the first.
+  if (qWords.length === 0) return passages[0]?.text;
   let best: string | undefined;
-  let bestScore = -1;
+  let bestScore = 0;
   for (const p of passages) {
     const lc = p.text.toLowerCase();
     const score = qWords.filter((w) => lc.includes(w)).length;
@@ -45,16 +63,40 @@ function pickPassage(passages: ReadPassage[], query: string): string | undefined
   return best;
 }
 
+/** Run `fn` over `items` with at most `limit` in flight — the anonymous tier rate-limits aggressive fan-out. */
+export async function mapLimit<T, R>(items: T[], limit: number, fn: (item: T) => Promise<R>): Promise<R[]> {
+  const out: R[] = new Array(items.length);
+  let next = 0;
+  await Promise.all(
+    Array.from({ length: Math.min(limit, items.length) }, async () => {
+      while (next < items.length) {
+        const i = next++;
+        out[i] = await fn(items[i]);
+      }
+    }),
+  );
+  return out;
+}
+
 export class CaesarClient {
   private client: Caesar;
   readonly keyed: boolean;
 
-  constructor(opts: { apiKey?: string; baseUrl?: string } = {}) {
-    const apiKey = opts.apiKey ?? process.env.CAESAR_SEARCH_API_KEY;
+  constructor(opts: { apiKey?: string; baseUrl?: string; timeoutMs?: number; maxRetries?: number } = {}) {
+    // Also honor the SDK's own CAESAR_API_KEY env fallback, so `keyed` can't
+    // report anonymous while the SDK actually sends a key.
+    const apiKey = opts.apiKey ?? process.env.CAESAR_SEARCH_API_KEY ?? process.env.CAESAR_API_KEY;
     const baseUrl = opts.baseUrl ?? process.env.CAESAR_SEARCH_BASE_URL ?? DEFAULT_BASE_URL;
     this.keyed = Boolean(apiKey);
     // apiKey omitted -> the SDK uses Caesar's anonymous tier (lower rate limit).
-    this.client = new Caesar({ apiKey, baseUrl });
+    // timeoutMs/maxRetries pass through to the SDK (defaults: 30s, 3 retries);
+    // interactive callers should lower them so a throttled call fails fast.
+    this.client = new Caesar({
+      apiKey,
+      baseUrl,
+      ...(opts.timeoutMs != null ? { timeoutMs: opts.timeoutMs } : {}),
+      ...(opts.maxRetries != null ? { maxRetries: opts.maxRetries } : {}),
+    });
   }
 
   async search(query: string, options: SearchOptions = {}): Promise<SearchResult> {
@@ -122,20 +164,28 @@ export class CaesarClient {
     const search = await this.search(query, { maxResults: 10, ...searchOpts });
     // Drop low-confidence / unscored results (gibberish queries return null scores).
     const results = minScore > 0 ? search.results.filter((r) => r.score != null && r.score >= minScore) : search.results;
-    const toRead = results.slice(0, readTopN);
-    const reads = await Promise.all(
-      toRead.map((r) =>
-        this.read(r.canonicalUrl, { maxChars: readMaxChars, query })
-          .then((doc) => ({ r, doc })).catch(() => ({ r, doc: null as ReadResult | null })),
-      ),
+    // Read each document once (search can surface the same doc under two ranks),
+    // and cap concurrency — parallel bursts self-induce 429s on the anonymous tier.
+    const keyOf = (r: SearchResultItem) => r.docId ?? r.canonicalUrl;
+    const seenKeys = new Set<string>();
+    const toRead = results
+      .filter((r) => { const k = keyOf(r); if (seenKeys.has(k)) return false; seenKeys.add(k); return true; })
+      .slice(0, readTopN);
+    const reads = await mapLimit(toRead, 3, (r) =>
+      this.read(r.canonicalUrl, { maxChars: readMaxChars, query })
+        .then((doc) => ({ r, doc })).catch(() => ({ r, doc: null as ReadResult | null })),
     );
-    const byDoc = new Map(reads.map(({ r, doc }) => [r.docId, doc]));
+    const byDoc = new Map<string, ReadResult | null>();
+    for (const { r, doc } of reads) {
+      const k = keyOf(r);
+      if (byDoc.get(k) == null) byDoc.set(k, doc); // never clobber a successful read with a failed one
+    }
     const citations: Citation[] = [];
     const blocks: string[] = [];
     for (const r of results) {
-      const doc = byDoc.get(r.docId);
+      const doc = byDoc.get(keyOf(r));
       // Caesar's real query-relevant passage (tidied) for the quote; full text kept for grounding.
-      const displayPassage = doc ? pickPassage(doc.passages, query) ?? doc.passages[0]?.text : undefined;
+      const displayPassage = doc ? pickPassage(doc.passages, query) : undefined;
       citations.push({
         rank: r.rank, title: r.title, canonicalUrl: r.canonicalUrl, docId: r.docId, score: r.score,
         captureId: doc?.captureId, captureTime: doc?.captureTime,
@@ -147,7 +197,7 @@ export class CaesarClient {
         : (doc?.passages ?? []).map((p) => p.text).join('\n') || displayPassage || r.snippet || '';
       if (body) blocks.push(`[${r.rank}] ${r.title} — ${r.canonicalUrl}\n${body}`);
     }
-    return { evidence: blocks.join('\n\n'), citations, searchId: search.searchId };
+    return { evidence: blocks.join('\n\n'), citations, searchId: search.searchId, resultCount: search.results.length };
   }
 }
 
