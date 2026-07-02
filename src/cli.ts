@@ -1,4 +1,6 @@
 #!/usr/bin/env node
+import { realpathSync } from 'node:fs';
+import { pathToFileURL } from 'node:url';
 import pc from 'picocolors';
 import { createCaesarClient } from '../lib/caesar.js';
 import { renderBriefing } from '../lib/briefing.js';
@@ -10,44 +12,103 @@ interface Args {
   maxResults: number;
   readTopN: number;
   noLlm: boolean;
+  domains?: string[];
+  after?: string;
 }
 
-/** Tiny hand-rolled arg parser — flags + the rest joined as the question. */
+/** Thrown by parseArgs on bad input; main turns it into usage + exit code 2. */
+export class UsageError extends Error {}
+
+function positiveInt(flag: string, raw: string): number {
+  const n = Number(raw);
+  if (!Number.isInteger(n) || n <= 0) {
+    throw new UsageError(`${flag} expects a positive integer, got "${raw}"`);
+  }
+  return n;
+}
+
+/**
+ * Tiny hand-rolled arg parser. Flags accept both "--flag value" and
+ * "--flag=value"; everything else joins as the question. An unknown --flag is
+ * an error, never silently folded into the question (a typo'd flag would
+ * otherwise corrupt the search).
+ */
 export function parseArgs(argv: string[]): Args {
   const args: Args = { question: '', help: false, maxResults: 10, readTopN: 4, noLlm: false };
   const rest: string[] = [];
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i];
-    if (a === '-h' || a === '--help') args.help = true;
-    else if (a === '--no-llm') args.noLlm = true;
-    else if (a === '--max-results') args.maxResults = Number(argv[++i]) || args.maxResults;
-    else if (a === '--read-top') args.readTopN = Number(argv[++i]) || args.readTopN;
-    else rest.push(a);
+    if (a === '-h' || a === '--help') { args.help = true; continue; }
+    if (!a.startsWith('--')) { rest.push(a); continue; }
+    const eq = a.indexOf('=');
+    const flag = eq === -1 ? a : a.slice(0, eq);
+    const inline = eq === -1 ? undefined : a.slice(eq + 1);
+    const value = (): string => {
+      if (inline !== undefined) return inline;
+      const next = argv[++i];
+      if (next === undefined) throw new UsageError(`${flag} expects a value`);
+      return next;
+    };
+    switch (flag) {
+      case '--no-llm':
+        if (inline !== undefined) throw new UsageError('--no-llm does not take a value');
+        args.noLlm = true;
+        break;
+      case '--max-results':
+        args.maxResults = positiveInt(flag, value());
+        break;
+      case '--read-top':
+        args.readTopN = positiveInt(flag, value());
+        break;
+      case '--domains': {
+        const domains = value().split(',').map((d) => d.trim()).filter(Boolean);
+        if (domains.length === 0) throw new UsageError('--domains expects a comma-separated list, e.g. --domains reuters.com,apnews.com');
+        args.domains = domains;
+        break;
+      }
+      case '--after': {
+        const after = value().trim();
+        if (!after) throw new UsageError('--after expects a date, e.g. --after 2026-01-01');
+        args.after = after;
+        break;
+      }
+      default:
+        throw new UsageError(`Unknown flag: ${flag}`);
+    }
   }
   args.question = rest.join(' ').trim();
   return args;
 }
 
-const HELP = `${pc.bold(pc.green('caesar-research'))} — a keyless CLI research agent
+const HELP = `${pc.bold(pc.green('caesar-research'))}: a keyless CLI research agent
 
 ${pc.bold('Usage')}
   caesar-research "<question>"
 
-${pc.bold('Options')}
-  --max-results <n>   sources to search (default 10)
-  --read-top <n>      sources to fully read (default 4)
-  --no-llm            skip optional Anthropic synthesis
-  -h, --help          show this help
+${pc.bold('Options')}  (both "--flag value" and "--flag=value" work)
+  --max-results <n>     sources to search (default 10)
+  --read-top <n>        sources to fully read (default 4)
+  --domains <a,b>       comma-separated domains to restrict the search to
+  --after <date>        only sources published after this date (e.g. 2026-01-01)
+  --no-llm              skip optional Anthropic synthesis
+  -h, --help            show this help
 
 ${pc.bold('Environment')} (all optional)
   CAESAR_SEARCH_API_KEY    higher rate limits on Caesar (keyless by default)
   CAESAR_RESEARCH_LLM_KEY  Anthropic key for a synthesized narrative answer
 
-${pc.dim('Powered by Caesar search — free, no signup.')}
+${pc.dim('Powered by Caesar search: free, no signup.')}
 `;
 
 export async function main(argv: string[]): Promise<number> {
-  const args = parseArgs(argv);
+  let args: Args;
+  try {
+    args = parseArgs(argv);
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    process.stderr.write(pc.red(msg + '\n\n') + HELP + '\n');
+    return 2;
+  }
 
   if (args.help) {
     process.stdout.write(HELP + '\n');
@@ -68,6 +129,8 @@ export async function main(argv: string[]): Promise<number> {
       readTopN: args.readTopN,
       mode: 'research',
       minScore: 0.3, // drop low-confidence / unscored (gibberish) results
+      ...(args.domains ? { includeDomains: args.domains } : {}),
+      ...(args.after ? { publishedAfter: args.after } : {}),
     });
     citations = result.citations;
   } catch (err) {
@@ -79,7 +142,7 @@ export async function main(argv: string[]): Promise<number> {
     return 2;
   }
 
-  // OPTIONAL synthesis — never required; null on no-key or any failure.
+  // OPTIONAL synthesis: never required; null on no-key or any failure.
   let narrative: string | null = null;
   if (!args.noLlm) {
     narrative = await synthesize(args.question, citations);
@@ -89,10 +152,28 @@ export async function main(argv: string[]): Promise<number> {
   return 0;
 }
 
-main(process.argv.slice(2)).then(
-  (code) => process.exit(code),
-  (err) => {
-    process.stderr.write(pc.red(`Unexpected error: ${err?.message ?? err}\n`));
-    process.exit(99);
-  },
-);
+/**
+ * Run only when invoked as a script (node dist/cli.js, or the npm bin, where
+ * argv[1] is a symlink; realpathSync resolves it). Importing this module (e.g.
+ * from vitest) must NOT start the CLI.
+ */
+function invokedAsScript(): boolean {
+  const entry = process.argv[1];
+  if (!entry) return false;
+  try {
+    return import.meta.url === pathToFileURL(realpathSync(entry)).href;
+  } catch {
+    return false;
+  }
+}
+
+if (invokedAsScript()) {
+  main(process.argv.slice(2)).then(
+    // exitCode (not process.exit) lets stdout flush; exit() can truncate piped output.
+    (code) => { process.exitCode = code; },
+    (err) => {
+      process.stderr.write(pc.red(`Unexpected error: ${err?.message ?? err}\n`));
+      process.exitCode = 99;
+    },
+  );
+}

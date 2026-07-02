@@ -9,13 +9,15 @@
   "files": [
     "dist",
     "lib",
+    "!lib/**/*.test.ts",
     "README.md",
     "LICENSE"
   ],
   "scripts": {
     "build": "tsup",
     "test": "vitest run",
-    "start": "node dist/cli.js"
+    "start": "node dist/cli.js",
+    "prepublishOnly": "npm run build"
   },
   "keywords": [
     "caesar",

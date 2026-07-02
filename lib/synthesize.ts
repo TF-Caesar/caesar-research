@@ -1,4 +1,5 @@
 import type { Citation } from './caesar.js';
+import { citationBody, readCitations } from './research.js';
 
 /**
  * OPTIONAL narrative synthesis via Anthropic. Only runs if CAESAR_RESEARCH_LLM_KEY
@@ -9,15 +10,21 @@ import type { Citation } from './caesar.js';
 const ANTHROPIC_URL = 'https://api.anthropic.com/v1/messages';
 const MODEL = 'claude-haiku-4-5';
 
-/** Build the grounded evidence block the model must reason over. */
+/**
+ * Build the grounded evidence block the model must reason over. Blocks are
+ * labeled with the DISPLAY index (position in readCitations, 1..n), not the raw
+ * search rank: formatSources renders the Sources list from the same array, so
+ * an inline [n] the model emits always matches source [n] in the briefing,
+ * even when unread or failed reads were dropped.
+ */
 function evidenceBlock(citations: Citation[]): string {
   const blocks: string[] = [];
-  for (const c of citations) {
-    const body = c.text && c.text.length > 200 ? c.text : c.passage ?? '';
-    if (!body) continue;
+  readCitations(citations).forEach((c, i) => {
+    const body = citationBody(c);
+    if (!body) return;
     const trimmed = body.length > 4000 ? body.slice(0, 4000) : body;
-    blocks.push(`[${c.rank}] ${c.title} — ${c.canonicalUrl}\n${trimmed}`);
-  }
+    blocks.push(`[${i + 1}] ${c.title} (${c.canonicalUrl})\n${trimmed}`);
+  });
   return blocks.join('\n\n');
 }
 

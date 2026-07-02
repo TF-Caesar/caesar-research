@@ -103,7 +103,7 @@ export function summarize(citations: Citation[], question: string, maxSentences 
   const seen = new Set<string>();
 
   for (const c of citations) {
-    const body = c.text && c.text.length > 200 ? c.text : c.passage ?? '';
+    const body = citationBody(c);
     if (!body) continue;
     for (const s of splitSentences(body)) {
       const key = s.toLowerCase().replace(/[^a-z0-9 ]/g, '').slice(0, 80);
@@ -119,6 +119,28 @@ export function summarize(citations: Citation[], question: string, maxSentences 
   return scored.slice(0, maxSentences).map((s) => s.text);
 }
 
+/**
+ * The evidence body for one citation: prefer the full read text when it is
+ * substantial, else the query-relevant passage, else the short-but-real text
+ * itself. A successfully read page of 200 chars or less still counts (on the
+ * anonymous tier passages are often absent, so it may be all we have).
+ */
+export function citationBody(c: Citation): string {
+  return c.text && c.text.length > 200 ? c.text : (c.passage || c.text || '');
+}
+
+/**
+ * The citations that were actually READ, in display order. searchAndRead emits
+ * a citation for every search hit but reads only the top N, so search-only
+ * results (no captureTime and no text) are dropped. This array is the single
+ * source of truth for display numbering: the Sources list AND the evidence
+ * blocks handed to the LLM both index into it as 1..n, so an inline [n] in the
+ * narrative always points at source [n] in the list.
+ */
+export function readCitations(citations: Citation[]): Citation[] {
+  return citations.filter((c) => Boolean(c.captureTime) || Boolean(c.text && c.text.trim()));
+}
+
 export interface SourceLine {
   index: number;
   title: string;
@@ -126,18 +148,12 @@ export interface SourceLine {
   capturedISO?: string;
 }
 
-/**
- * Format the numbered Sources list. Only includes sources actually READ —
- * searchAndRead emits a citation for every search hit but reads only the top N,
- * so we drop search-only results (no captureTime and no text) and renumber from 1.
- */
+/** Format the numbered Sources list from the read citations, numbered from 1. */
 export function formatSources(citations: Citation[]): SourceLine[] {
-  return citations
-    .filter((c) => Boolean(c.captureTime) || Boolean(c.text && c.text.trim()))
-    .map((c, i) => ({
-      index: i + 1,
-      title: (c.title || c.canonicalUrl || 'Untitled').trim(),
-      url: c.canonicalUrl,
-      capturedISO: c.captureTime,
-    }));
+  return readCitations(citations).map((c, i) => ({
+    index: i + 1,
+    title: (c.title || c.canonicalUrl || 'Untitled').trim(),
+    url: c.canonicalUrl,
+    capturedISO: c.captureTime,
+  }));
 }

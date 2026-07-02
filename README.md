@@ -3,10 +3,21 @@
 Ask a question. Get a cited, evidence-grounded briefing — pulled from **live web sources**, not a model's memory.
 
 ```bash
-npx caesar-research "who won the 2022 FIFA World Cup"
+git clone https://github.com/TF-Caesar/caesar-research
+cd caesar-research
+npm install && npm run build
+node dist/cli.js "who won the 2022 FIFA World Cup"
 ```
 
 Free. No signup. No API key. **Powered by [Caesar](https://trycaesar.com) search — free, no signup.**
+
+Once the package is published to npm, the whole quick start collapses to a one-liner:
+
+```bash
+npx caesar-research "who won the 2022 FIFA World Cup"
+```
+
+Until then, the clone-and-build steps above are the way to run it.
 
 ## Why this is different
 
@@ -14,15 +25,7 @@ Most "ask an AI" tools answer from training data and hope it's still true. This 
 
 By default the summary is **deterministic** — it extracts the most question-relevant sentences across the sources using a small term-overlap scorer (the same `bestSnippet` idea behind [caesar-verifier](https://github.com/TF-Caesar/caesar-verifier)). No model required, nothing invented. If you want a narrative answer, point it at an Anthropic key and it will synthesize one **grounded in the same evidence** — and fall back to the deterministic briefing on any failure.
 
-## Run it locally (zero setup)
-
-```bash
-git clone https://github.com/TF-Caesar/caesar-research
-cd caesar-research
-npm install
-npm run build
-node dist/cli.js "what is the James Webb Space Telescope"
-```
+## Options
 
 No keys required — it runs on Caesar's free anonymous tier.
 
@@ -31,11 +34,16 @@ Optional environment variables:
 - `CAESAR_SEARCH_API_KEY` — a Caesar key for higher rate limits (keyless by default).
 - `CAESAR_RESEARCH_LLM_KEY` — an Anthropic key to synthesize a narrative answer (off by default; deterministic otherwise).
 
-Flags:
+Flags (every flag accepts both `--flag value` and `--flag=value`; an unknown or malformed flag errors instead of silently joining the question):
 
-- `--max-results <n>` — how many sources to search (default 10).
-- `--read-top <n>` — how many sources to fully read (default 4).
-- `--no-llm` — skip synthesis even if a key is set.
+| Flag | What it does | Default |
+| --- | --- | --- |
+| `--max-results <n>` | how many sources to search | 10 |
+| `--read-top <n>` | how many sources to fully read | 4 |
+| `--domains <a.com,b.com>` | restrict the search to these domains | all domains |
+| `--after <YYYY-MM-DD>` | only sources published after this date | any time |
+| `--no-llm` | skip synthesis even if a key is set | off |
+| `-h, --help` | show help | |
 
 ## How it works
 

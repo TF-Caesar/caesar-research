@@ -6,6 +6,8 @@ import {
   scoreSentence,
   bestSnippet,
   summarize,
+  citationBody,
+  readCitations,
   formatSources,
 } from './research.js';
 import type { Citation } from './caesar.js';
@@ -120,6 +122,41 @@ describe('summarize', () => {
   it('returns empty array when no sentence addresses the question', () => {
     const out = summarize([citations[2]], 'Who won the 2022 FIFA World Cup?', 4);
     expect(out).toEqual([]);
+  });
+
+  it('still counts a short-but-real read (text of 200 chars or less, no passage)', () => {
+    const short: Citation[] = [{
+      rank: 1, title: 'Short', canonicalUrl: 'https://short.com/a', docId: 'd1',
+      text: 'Argentina won the 2022 FIFA World Cup in Qatar after beating France.',
+    }];
+    const out = summarize(short, 'Who won the 2022 FIFA World Cup?', 2);
+    expect(out.join(' ')).toMatch(/Argentina/);
+  });
+});
+
+describe('citationBody', () => {
+  const base = { rank: 1, title: 'T', canonicalUrl: 'https://x.com', docId: 'd1' };
+  it('prefers substantial full text over the passage', () => {
+    const long = 'Long full text. '.repeat(20);
+    expect(citationBody({ ...base, text: long, passage: 'passage' })).toBe(long);
+  });
+  it('falls back to the passage when text is short', () => {
+    expect(citationBody({ ...base, text: 'short', passage: 'passage' })).toBe('passage');
+  });
+  it('falls back to the short text itself when there is no passage', () => {
+    expect(citationBody({ ...base, text: 'short but real' })).toBe('short but real');
+  });
+  it('returns empty string when the citation has nothing', () => {
+    expect(citationBody(base)).toBe('');
+  });
+});
+
+describe('readCitations', () => {
+  it('keeps read citations in order and drops search-only ones', () => {
+    const read: Citation = { rank: 1, title: 'A', canonicalUrl: 'https://a.com', docId: 'd1', captureTime: '2026-06-21T14:03:00Z' };
+    const unread: Citation = { rank: 2, title: 'B', canonicalUrl: 'https://b.com', docId: 'd2' };
+    const readText: Citation = { rank: 3, title: 'C', canonicalUrl: 'https://c.com', docId: 'd3', text: 'body' };
+    expect(readCitations([read, unread, readText]).map((c) => c.rank)).toEqual([1, 3]);
   });
 });
 
