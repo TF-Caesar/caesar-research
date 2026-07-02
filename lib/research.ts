@@ -146,6 +146,8 @@ export interface SourceLine {
   title: string;
   url: string;
   capturedISO?: string;
+  /** Best-effort page publish time from Caesar; absent on many pages. */
+  publishedAt?: string;
 }
 
 /** Format the numbered Sources list from the read citations, numbered from 1. */
@@ -155,5 +157,6 @@ export function formatSources(citations: Citation[]): SourceLine[] {
     title: (c.title || c.canonicalUrl || 'Untitled').trim(),
     url: c.canonicalUrl,
     capturedISO: c.captureTime,
+    publishedAt: c.publishedAt,
   }));
 }

@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeAll } from 'vitest';
-import { renderBriefing, wrap } from './briefing.js';
+import { renderBriefing, wrap, relativeTime, receiptLine } from './briefing.js';
 import type { Citation } from './caesar.js';
 
 // Force picocolors off so we assert plain text, not ANSI codes.
@@ -47,6 +47,62 @@ describe('renderBriefing', () => {
   it('handles zero sources gracefully', () => {
     const out = renderBriefing({ question: 'Anything?', citations: [] });
     expect(out).toContain('No sources were read.');
+    expect(out).not.toContain('sources read'); // no receipt line without sources
+  });
+
+  it('shows "published <date> · captured <time>" when the citation carries publishedAt', () => {
+    const withPublished: Citation[] = [
+      {
+        rank: 1, title: 'AP News', canonicalUrl: 'https://ap.com/a', docId: 'd1',
+        captureTime: '2026-06-21T14:03:00Z', publishedAt: '2026-06-20T08:00:00Z',
+        text: 'Argentina won the 2022 FIFA World Cup, defeating France on penalties. '.repeat(4),
+      },
+    ];
+    const out = renderBriefing({ question: 'Who won?', citations: withPublished });
+    expect(out).toContain('published 2026-06-20 · captured 2026-06-21T14:03:00Z');
+  });
+
+  it('keeps the captured-only stamp when publishedAt is absent', () => {
+    const out = renderBriefing({ question: 'Who won the 2022 FIFA World Cup?', citations });
+    expect(out).toContain('captured 2026-06-21T14:03:00Z');
+    expect(out).not.toContain('published ');
+  });
+
+  it('renders the receipt stat line from real capture times', () => {
+    const now = Date.parse('2026-06-23T14:03:00Z');
+    const out = renderBriefing({ question: 'Who won?', citations, now });
+    expect(out).toContain('2 sources read · newest capture 2d ago');
+  });
+});
+
+describe('relativeTime', () => {
+  const now = Date.parse('2026-07-02T12:00:00Z');
+
+  it('renders minutes, hours, and days ago; sub-minute is "just now"', () => {
+    expect(relativeTime('2026-07-02T11:58:00Z', now)).toBe('2m ago');
+    expect(relativeTime('2026-07-02T09:00:00Z', now)).toBe('3h ago');
+    expect(relativeTime('2026-06-29T12:00:00Z', now)).toBe('3d ago');
+    expect(relativeTime('2026-07-02T11:59:30Z', now)).toBe('just now');
+  });
+
+  it('returns undefined for unparseable input (a stamp never fabricates a time)', () => {
+    expect(relativeTime('not-a-date', now)).toBeUndefined();
+  });
+});
+
+describe('receiptLine', () => {
+  const now = Date.parse('2026-07-02T12:00:00Z');
+
+  it('uses the singular for one source', () => {
+    expect(receiptLine([{ capturedISO: '2026-07-02T11:58:00Z' }], now)).toBe('1 source read · newest capture 2m ago');
+  });
+
+  it('omits the newest-capture clause when no capture time parses (never fabricates)', () => {
+    expect(receiptLine([{}, { capturedISO: 'garbage' }], now)).toBe('2 sources read');
+  });
+
+  it('returns undefined when nothing was read', () => {
+    expect(receiptLine([], now)).toBeUndefined();
   });
 });
 

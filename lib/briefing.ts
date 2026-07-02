@@ -12,13 +12,62 @@ export interface BriefingInput {
   citations: Citation[];
   /** Optional LLM narrative; when present it replaces the deterministic summary. */
   narrative?: string | null;
+  /** Clock for the relative receipt line; injectable so rendering stays pure in tests. */
+  now?: number;
 }
 
 function rule(): string {
   return pc.dim('─'.repeat(60));
 }
 
-export function renderBriefing({ question, citations, narrative }: BriefingInput): string {
+/**
+ * Compact relative age for provenance stamps: "just now", "7m ago", "3h ago",
+ * "2d ago". Returns undefined for unparseable input: a stamp must never
+ * fabricate a time. Future timestamps (clock skew) clamp to "just now".
+ */
+export function relativeTime(iso: string, now: number = Date.now()): string | undefined {
+  const t = Date.parse(iso);
+  if (Number.isNaN(t)) return undefined;
+  const seconds = Math.max(0, Math.floor((now - t) / 1000));
+  if (seconds < 60) return 'just now';
+  const minutes = Math.floor(seconds / 60);
+  if (minutes < 60) return `${minutes}m ago`;
+  const hours = Math.floor(minutes / 60);
+  if (hours < 24) return `${hours}h ago`;
+  return `${Math.floor(hours / 24)}d ago`;
+}
+
+/**
+ * Receipt stat line for the briefing: "<N> sources read · newest capture
+ * <relative>". The newest-capture clause comes from real capturedISO values and
+ * is omitted entirely when none parse: the receipt never fabricates a time.
+ * Returns undefined when nothing was read.
+ */
+export function receiptLine(sources: { capturedISO?: string }[], now: number = Date.now()): string | undefined {
+  if (sources.length === 0) return undefined;
+  const label = `${sources.length} ${sources.length === 1 ? 'source' : 'sources'} read`;
+  let newest = -Infinity;
+  for (const s of sources) {
+    const t = s.capturedISO ? Date.parse(s.capturedISO) : NaN;
+    if (!Number.isNaN(t) && t > newest) newest = t;
+  }
+  if (newest === -Infinity) return label;
+  const rel = relativeTime(new Date(newest).toISOString(), now);
+  return rel ? `${label} · newest capture ${rel}` : label;
+}
+
+/**
+ * Date part of a best-effort publish time. Undefined when absent or
+ * unparseable, so the line falls back to the captured-only stamp.
+ */
+function publishedDate(iso?: string): string | undefined {
+  if (!iso) return undefined;
+  const t = Date.parse(iso);
+  if (Number.isNaN(t)) return undefined;
+  return new Date(t).toISOString().slice(0, 10);
+}
+
+export function renderBriefing({ question, citations, narrative, now = Date.now() }: BriefingInput): string {
   const out: string[] = [];
 
   out.push('');
@@ -50,12 +99,17 @@ export function renderBriefing({ question, citations, narrative }: BriefingInput
     out.push('  ' + pc.dim('No sources were read.'));
   } else {
     for (const s of sources) {
-      const captured = s.capturedISO
-        ? pc.dim(`captured ${s.capturedISO}`)
-        : pc.dim('captured (time unavailable)');
+      const captured = s.capturedISO ? `captured ${s.capturedISO}` : 'captured (time unavailable)';
+      const published = publishedDate(s.publishedAt);
+      const stamp = published ? `published ${published} · ${captured}` : captured;
       out.push('  ' + pc.green(`[${s.index}]`) + ' ' + pc.bold(s.title));
       out.push('      ' + pc.cyan(s.url));
-      out.push('      ' + captured);
+      out.push('      ' + pc.dim(stamp));
+    }
+    const receipt = receiptLine(sources, now);
+    if (receipt) {
+      out.push('');
+      out.push('  ' + pc.dim(receipt));
     }
   }
 

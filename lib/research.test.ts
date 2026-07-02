@@ -187,4 +187,11 @@ describe('formatSources', () => {
     expect(lines).toHaveLength(1);
     expect(lines[0]).toMatchObject({ index: 1, url: 'https://ap.com/a' });
   });
+
+  it('carries publishedAt when the citation has one, leaves it undefined otherwise', () => {
+    const published: Citation = { ...read1, publishedAt: '2026-06-20T08:00:00Z' };
+    const lines = formatSources([published, readNoTime]);
+    expect(lines[0].publishedAt).toBe('2026-06-20T08:00:00Z');
+    expect(lines[1].publishedAt).toBeUndefined();
+  });
 });
