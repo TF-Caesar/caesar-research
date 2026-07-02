@@ -4,6 +4,7 @@ import { pathToFileURL } from 'node:url';
 import pc from 'picocolors';
 import { createCaesarClient } from '../lib/caesar.js';
 import { renderBriefing } from '../lib/briefing.js';
+import { readCitations } from '../lib/research.js';
 import { synthesize } from '../lib/synthesize.js';
 
 interface Args {
@@ -39,7 +40,14 @@ export function parseArgs(argv: string[]): Args {
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i];
     if (a === '-h' || a === '--help') { args.help = true; continue; }
-    if (!a.startsWith('--')) { rest.push(a); continue; }
+    if (!a.startsWith('--')) {
+      // A single-dash token that looks like a flag is a typo, not part of the
+      // question ("-max-results 5" would otherwise silently corrupt the
+      // search). Negative numbers ("-273.15") still join the question.
+      if (/^-[a-zA-Z]/.test(a)) throw new UsageError(`Unknown flag: ${a} (long flags start with --)`);
+      rest.push(a);
+      continue;
+    }
     const eq = a.indexOf('=');
     const flag = eq === -1 ? a : a.slice(0, eq);
     const inline = eq === -1 ? undefined : a.slice(eq + 1);
@@ -123,6 +131,7 @@ export async function main(argv: string[]): Promise<number> {
   process.stderr.write(pc.dim(`Searching Caesar${client.keyed ? '' : ' (anonymous tier)'}…\n`));
 
   let citations;
+  let resultCount = 0;
   try {
     const result = await client.searchAndRead(args.question, {
       maxResults: args.maxResults,
@@ -133,6 +142,7 @@ export async function main(argv: string[]): Promise<number> {
       ...(args.after ? { publishedAfter: args.after } : {}),
     });
     citations = result.citations;
+    resultCount = result.resultCount;
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
     process.stderr.write(pc.red(`Caesar request failed: ${msg}\n`));
@@ -146,6 +156,15 @@ export async function main(argv: string[]): Promise<number> {
   let narrative: string | null = null;
   if (!args.noLlm) {
     narrative = await synthesize(args.question, citations);
+  }
+
+  // Distinguish a filtered/unreadable run from a genuinely empty web: Caesar
+  // found results, but the score floor dropped them or every read failed.
+  // Without this, "No sources were read." reads like the topic has no coverage.
+  if (resultCount > 0 && readCitations(citations).length === 0) {
+    process.stderr.write(pc.dim(
+      `Caesar found ${resultCount} result(s), but none passed the score floor or could be read (the free tier may be busy). Try again shortly${args.domains || args.after ? ', or relax --domains/--after' : ''}.\n`,
+    ));
   }
 
   process.stdout.write(renderBriefing({ question: args.question, citations, narrative }) + '\n');

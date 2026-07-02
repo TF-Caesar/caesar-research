@@ -1,9 +1,19 @@
 import { describe, it, expect, vi, afterEach } from 'vitest';
+
+// Stub the Caesar client so main() tests never touch the network.
+const { searchAndReadMock } = vi.hoisted(() => ({ searchAndReadMock: vi.fn() }));
+vi.mock('../lib/caesar.js', () => ({
+  createCaesarClient: () => ({ keyed: false, searchAndRead: searchAndReadMock }),
+}));
+
 // Importing the module must NOT start the CLI: cli.ts guards main() behind an
 // invoked-as-script check, so this import is side-effect free.
 import { parseArgs, main, UsageError } from './cli.js';
 
-afterEach(() => { vi.restoreAllMocks(); });
+afterEach(() => {
+  vi.restoreAllMocks();
+  searchAndReadMock.mockReset();
+});
 
 describe('parseArgs', () => {
   it('joins bare tokens into the question and applies defaults', () => {
@@ -47,6 +57,16 @@ describe('parseArgs', () => {
     expect(() => parseArgs(['--bogus=1', 'q'])).toThrow(/Unknown flag: --bogus/);
   });
 
+  it('rejects single-dash flag typos instead of folding them into the question', () => {
+    expect(() => parseArgs(['-max-results', '5', 'q'])).toThrow(UsageError);
+    expect(() => parseArgs(['-domains=x.com', 'q'])).toThrow(/Unknown flag: -domains/);
+    expect(() => parseArgs(['-no-llm', 'q'])).toThrow(UsageError);
+  });
+
+  it('still lets negative-number tokens join the question', () => {
+    expect(parseArgs(['what', 'is', '-273.15', 'celsius']).question).toBe('what is -273.15 celsius');
+  });
+
   it('rejects NaN and non-positive numeric values', () => {
     expect(() => parseArgs(['--max-results', 'abc'])).toThrow(UsageError);
     expect(() => parseArgs(['--max-results=0'])).toThrow(UsageError);
@@ -80,5 +100,36 @@ describe('main', () => {
   it('returns 1 when no question is given', async () => {
     vi.spyOn(process.stderr, 'write').mockImplementation(() => true);
     expect(await main([])).toBe(1);
+  });
+
+  it('explains when results were found but none survived the score floor or reads', async () => {
+    const stderr = vi.spyOn(process.stderr, 'write').mockImplementation(() => true);
+    vi.spyOn(process.stdout, 'write').mockImplementation(() => true);
+    // Caesar found 7 results, but minScore filtered or throttled reads dropped
+    // them all — without the hint this is indistinguishable from an empty web.
+    searchAndReadMock.mockResolvedValue({ searchId: 's', citations: [], resultCount: 7 });
+
+    const code = await main(['--no-llm', 'some question']);
+
+    expect(code).toBe(0);
+    const err = stderr.mock.calls.map((c) => String(c[0])).join('');
+    expect(err).toContain('found 7');
+    expect(err).toMatch(/score floor|could not be read/);
+  });
+
+  it('prints no filter hint when sources were actually read', async () => {
+    const stderr = vi.spyOn(process.stderr, 'write').mockImplementation(() => true);
+    vi.spyOn(process.stdout, 'write').mockImplementation(() => true);
+    searchAndReadMock.mockResolvedValue({
+      searchId: 's',
+      citations: [{ rank: 1, title: 'T', canonicalUrl: 'https://x', text: 'A grounded read body.', captureTime: '2026-07-01T00:00:00Z' }],
+      resultCount: 3,
+    });
+
+    const code = await main(['--no-llm', 'some question']);
+
+    expect(code).toBe(0);
+    const err = stderr.mock.calls.map((c) => String(c[0])).join('');
+    expect(err).not.toMatch(/score floor/);
   });
 });
