@@ -9,14 +9,28 @@ export interface SearchOptions {
   country?: string;
   language?: string;
 }
-export interface SearchResultItem { rank: number; title: string; canonicalUrl: string; docId: string; snippet?: string; score?: number; }
-export interface SearchResult { searchId?: string; results: SearchResultItem[]; }
+export interface SearchResultItem {
+  rank: number; title: string; canonicalUrl: string; docId: string; snippet?: string; score?: number;
+  /** Best-effort publication date parsed by Caesar from source metadata (RFC3339); often absent on older pages. */
+  publishedAt?: string;
+  /** sha256 digest of the captured content — compare across runs to detect a page change without re-reading. */
+  contentDigest?: string;
+}
+/** The caller's live quota, straight off the response's access block. */
+export interface RateLimitInfo { limitRps?: number; remaining?: number; resetAt?: string; }
+export interface SearchResult { searchId?: string; results: SearchResultItem[]; tier?: string; rateLimit?: RateLimitInfo; }
 export interface ReadOptions { maxChars?: number; query?: string; }
 export interface ReadPassage { passageId?: string; text: string; }
 export interface ReadResult { docId?: string; canonicalUrl?: string; text: string; passages: ReadPassage[]; captureId?: string; captureTime?: string; }
 export interface Citation {
   rank: number; title: string; canonicalUrl: string; docId: string;
   passageId?: string; captureId?: string; captureTime?: string; passage?: string; text?: string; score?: number;
+  publishedAt?: string; contentDigest?: string;
+}
+export interface FeedbackEvent {
+  /** What happened; passage_used (a passage was cited) is the safest automatic signal. */
+  eventType: 'result_helpful' | 'result_not_helpful' | 'passage_used' | 'read_abandoned' | 'duplicate_result' | 'stale_result' | 'spam_or_low_quality' | 'missing_expected_source';
+  searchId?: string; docId?: string; passageId?: string; rank?: number; query?: string; notes?: string;
 }
 export interface SearchAndReadResult {
   evidence: string;
@@ -29,6 +43,8 @@ export interface SearchAndReadResult {
    * even when the search succeeded.
    */
   resultCount: number;
+  tier?: string;
+  rateLimit?: RateLimitInfo;
 }
 
 const DEFAULT_BASE_URL = 'https://alpha.api.trycaesar.com';
@@ -47,20 +63,33 @@ function tidy(s: string): string {
  * Pick the passage most relevant to the query (simple word overlap). Returns
  * undefined when NO passage shares a word with the query — a zero-overlap
  * passage displayed as "the supporting quote" would be worse than no quote.
+ * Returns the whole passage (not just text) so callers keep its passage_id
+ * for provenance receipts and passage_used feedback.
  */
-function pickPassage(passages: ReadPassage[], query: string): string | undefined {
+function pickPassage(passages: ReadPassage[], query: string): ReadPassage | undefined {
   const qWords = (query.toLowerCase().match(/[a-z0-9]{3,}/g) ?? []);
   // No scoreable query words -> nothing to rank by; Caesar's passages are
   // already query-relevant (read() passes the query), so take the first.
-  if (qWords.length === 0) return passages[0]?.text;
-  let best: string | undefined;
+  if (qWords.length === 0) return passages[0];
+  let best: ReadPassage | undefined;
   let bestScore = 0;
   for (const p of passages) {
     const lc = p.text.toLowerCase();
     const score = qWords.filter((w) => lc.includes(w)).length;
-    if (score > bestScore) { bestScore = score; best = p.text; }
+    if (score > bestScore) { bestScore = score; best = p; }
   }
   return best;
+}
+
+/** Normalize the response's access block into { tier, rateLimit } (absent fields stay undefined). */
+function accessInfo(resp: any): { tier?: string; rateLimit?: RateLimitInfo } {
+  const access = resp?.access;
+  if (!access) return {};
+  const rl = access.rate_limit;
+  return {
+    ...(access.tier ? { tier: access.tier } : {}),
+    ...(rl ? { rateLimit: { limitRps: rl.limit_rps, remaining: rl.remaining, resetAt: rl.reset_at } } : {}),
+  };
 }
 
 /** Run `fn` over `items` with at most `limit` in flight — the anonymous tier rate-limits aggressive fan-out. */
@@ -129,9 +158,11 @@ export class CaesarClient {
       return {
         rank: r.rank, title: r.title, canonicalUrl: r.canonical_url, docId: r.doc_id, snippet: r.snippet,
         ...(score != null ? { score } : {}),
+        ...(r.metadata?.published_at ? { publishedAt: r.metadata.published_at } : {}),
+        ...(r.metadata?.content_digest ? { contentDigest: r.metadata.content_digest } : {}),
       };
     });
-    return { searchId: resp?.search_id, results };
+    return { searchId: resp?.search_id, results, ...accessInfo(resp) };
   }
 
   async read(target: string, options: ReadOptions = {}): Promise<ReadResult> {
@@ -189,15 +220,41 @@ export class CaesarClient {
       citations.push({
         rank: r.rank, title: r.title, canonicalUrl: r.canonicalUrl, docId: r.docId, score: r.score,
         captureId: doc?.captureId, captureTime: doc?.captureTime,
-        passage: displayPassage,
+        passage: displayPassage?.text,
+        passageId: displayPassage?.passageId,
         text: doc?.text,
+        publishedAt: r.publishedAt,
+        contentDigest: r.contentDigest,
       });
       const body = doc?.text && doc.text.length > 200
         ? doc.text
-        : (doc?.passages ?? []).map((p) => p.text).join('\n') || displayPassage || r.snippet || '';
+        : (doc?.passages ?? []).map((p) => p.text).join('\n') || displayPassage?.text || r.snippet || '';
       if (body) blocks.push(`[${r.rank}] ${r.title} — ${r.canonicalUrl}\n${body}`);
     }
-    return { evidence: blocks.join('\n\n'), citations, searchId: search.searchId, resultCount: search.results.length };
+    return {
+      evidence: blocks.join('\n\n'), citations, searchId: search.searchId, resultCount: search.results.length,
+      tier: search.tier, rateLimit: search.rateLimit,
+    };
+  }
+
+  /**
+   * Fire-and-forget quality feedback to Caesar (/v1/feedback). Deliberately
+   * not awaited and never throws: feedback is a courtesy signal that helps
+   * Caesar's ranking learn, not part of the request path — a failed or slow
+   * feedback call must never affect what the user sees.
+   */
+  sendFeedback(event: FeedbackEvent): void {
+    const { eventType, searchId, docId, passageId, rank, query, notes } = event;
+    void Promise.resolve()
+      .then(() => (this.client as any).feedback(eventType, {
+        ...(searchId ? { search_id: searchId } : {}),
+        ...(docId ? { doc_id: docId } : {}),
+        ...(passageId ? { passage_id: passageId } : {}),
+        ...(rank != null ? { rank } : {}),
+        ...(query ? { query } : {}),
+        ...(notes ? { notes } : {}),
+      }))
+      .catch(() => { /* best-effort by design */ });
   }
 }
 
