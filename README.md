@@ -43,6 +43,7 @@ Flags (every flag accepts both `--flag value` and `--flag=value`; an unknown or 
 | `--domains <a.com,b.com>` | restrict the search to these domains | all domains |
 | `--after <YYYY-MM-DD>` | only sources published after this date | any time |
 | `--no-llm` | skip synthesis even if a key is set | off |
+| `--json` | print one JSON object (`question`, `summary`, `sources`, `narrative`, `resultCount`, `tier`) to stdout, nothing else: pipe it straight into `jq` | off |
 | `-h, --help` | show help | |
 
 ## How it works

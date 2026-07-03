@@ -33,6 +33,14 @@ describe('renderBriefing', () => {
     expect(out).toContain('Powered by Caesar search — free, no signup.');
   });
 
+  it('suffixes each deterministic bullet with the [n] of its origin source', () => {
+    const out = renderBriefing({ question: 'Who won the 2022 FIFA World Cup?', citations });
+    // The AP sentence came from read source 1, the BBC sentence from source 2:
+    // the inline [n] must match the numbering of the Sources list below it.
+    expect(out).toMatch(/defeating France on penalties\.\s+\[1\]/);
+    expect(out).toMatch(/for Argentina in Qatar\.\s+\[2\]/);
+  });
+
   it('uses the synthesized narrative when provided, replacing the Summary block', () => {
     const out = renderBriefing({
       question: 'Who won?',

@@ -87,7 +87,8 @@ export function renderBriefing({ question, citations, narrative, now = Date.now(
       out.push('  ' + pc.dim('No source sentence clearly addressed the question. See sources below.'));
     } else {
       for (const s of sentences) {
-        for (const line of wrap('• ' + s, 76)) out.push('  ' + line);
+        // Inline [n] matches the numbering of the Sources list below.
+        for (const line of wrap('• ' + s.text + ' ' + pc.dim(`[${s.sourceIndex}]`), 76)) out.push('  ' + line);
       }
     }
   }

@@ -4,7 +4,7 @@ import { pathToFileURL } from 'node:url';
 import pc from 'picocolors';
 import { createCaesarClient } from '../lib/caesar.js';
 import { renderBriefing } from '../lib/briefing.js';
-import { readCitations } from '../lib/research.js';
+import { formatSources, readCitations, summarize } from '../lib/research.js';
 import { synthesize } from '../lib/synthesize.js';
 
 interface Args {
@@ -13,6 +13,7 @@ interface Args {
   maxResults: number;
   readTopN: number;
   noLlm: boolean;
+  json: boolean;
   domains?: string[];
   after?: string;
 }
@@ -35,7 +36,7 @@ function positiveInt(flag: string, raw: string): number {
  * otherwise corrupt the search).
  */
 export function parseArgs(argv: string[]): Args {
-  const args: Args = { question: '', help: false, maxResults: 10, readTopN: 4, noLlm: false };
+  const args: Args = { question: '', help: false, maxResults: 10, readTopN: 4, noLlm: false, json: false };
   const rest: string[] = [];
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i];
@@ -61,6 +62,10 @@ export function parseArgs(argv: string[]): Args {
       case '--no-llm':
         if (inline !== undefined) throw new UsageError('--no-llm does not take a value');
         args.noLlm = true;
+        break;
+      case '--json':
+        if (inline !== undefined) throw new UsageError('--json does not take a value');
+        args.json = true;
         break;
       case '--max-results':
         args.maxResults = positiveInt(flag, value());
@@ -99,6 +104,7 @@ ${pc.bold('Options')}  (both "--flag value" and "--flag=value" work)
   --domains <a,b>       comma-separated domains to restrict the search to
   --after <date>        only sources published after this date (e.g. 2026-01-01)
   --no-llm              skip optional Anthropic synthesis
+  --json                print the briefing as one JSON object on stdout
   -h, --help            show this help
 
 ${pc.bold('Environment')} (all optional)
@@ -132,6 +138,7 @@ export async function main(argv: string[]): Promise<number> {
 
   let citations;
   let resultCount = 0;
+  let tier: string | undefined;
   try {
     const result = await client.searchAndRead(args.question, {
       maxResults: args.maxResults,
@@ -143,6 +150,7 @@ export async function main(argv: string[]): Promise<number> {
     });
     citations = result.citations;
     resultCount = result.resultCount;
+    tier = result.tier;
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
     process.stderr.write(pc.red(`Caesar request failed: ${msg}\n`));
@@ -165,6 +173,22 @@ export async function main(argv: string[]): Promise<number> {
     process.stderr.write(pc.dim(
       `Caesar found ${resultCount} result(s), but none passed the score floor or could be read (the free tier may be busy). Try again shortly${args.domains || args.after ? ', or relax --domains/--after' : ''}.\n`,
     ));
+  }
+
+  if (args.json) {
+    // ONE JSON object and nothing else on stdout: progress and hints stay on
+    // stderr, so `caesar-research --json | jq` always parses. No picocolors
+    // here: JSON.stringify output is ANSI-free by construction.
+    const payload = {
+      question: args.question,
+      summary: summarize(citations, args.question, 4),
+      sources: formatSources(citations),
+      narrative,
+      resultCount,
+      tier: tier ?? (client.keyed ? 'keyed' : 'anonymous'),
+    };
+    process.stdout.write(JSON.stringify(payload, null, 2) + '\n');
+    return 0;
   }
 
   process.stdout.write(renderBriefing({ question: args.question, citations, narrative }) + '\n');

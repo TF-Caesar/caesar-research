@@ -52,6 +52,12 @@ describe('parseArgs', () => {
     expect(parseArgs(['--help']).help).toBe(true);
   });
 
+  it('parses --json as a bare flag and rejects a value', () => {
+    expect(parseArgs(['--json', 'q']).json).toBe(true);
+    expect(parseArgs(['q']).json).toBe(false);
+    expect(() => parseArgs(['--json=1', 'q'])).toThrow(UsageError);
+  });
+
   it('rejects unknown flags instead of folding them into the question', () => {
     expect(() => parseArgs(['--max-result', '5', 'q'])).toThrow(UsageError);
     expect(() => parseArgs(['--bogus=1', 'q'])).toThrow(/Unknown flag: --bogus/);
@@ -115,6 +121,39 @@ describe('main', () => {
     const err = stderr.mock.calls.map((c) => String(c[0])).join('');
     expect(err).toContain('found 7');
     expect(err).toMatch(/score floor|could not be read/);
+  });
+
+  it('--json emits exactly one parseable JSON object on stdout, ANSI-free, with the exact keys', async () => {
+    const stdoutWrites: string[] = [];
+    vi.spyOn(process.stdout, 'write').mockImplementation((chunk) => { stdoutWrites.push(String(chunk)); return true; });
+    vi.spyOn(process.stderr, 'write').mockImplementation(() => true);
+    searchAndReadMock.mockResolvedValue({
+      searchId: 's',
+      resultCount: 3,
+      citations: [{
+        rank: 1, title: 'AP News', canonicalUrl: 'https://ap.com/a', docId: 'd1',
+        captureTime: '2026-07-01T00:00:00Z',
+        text: 'Argentina won the 2022 FIFA World Cup, defeating France on penalties. '.repeat(4),
+      }],
+    });
+
+    const code = await main(['--json', '--no-llm', 'who won the 2022 FIFA World Cup']);
+
+    expect(code).toBe(0);
+    // ALL of stdout must be the JSON object: progress stays on stderr, and a
+    // stray colored line would break every `caesar-research --json | jq` pipe.
+    const stdout = stdoutWrites.join('');
+    expect(stdout).not.toMatch(/\x1b\[/);
+    const payload = JSON.parse(stdout);
+    expect(Object.keys(payload).sort()).toEqual(['narrative', 'question', 'resultCount', 'sources', 'summary', 'tier']);
+    expect(payload.question).toBe('who won the 2022 FIFA World Cup');
+    expect(payload.resultCount).toBe(3);
+    expect(payload.tier).toBe('anonymous');
+    expect(payload.narrative).toBeNull();
+    expect(payload.summary.length).toBeGreaterThan(0);
+    expect(payload.summary[0]).toMatchObject({ sourceIndex: 1 });
+    expect(payload.summary[0].text).toMatch(/Argentina/);
+    expect(payload.sources[0]).toMatchObject({ index: 1, url: 'https://ap.com/a' });
   });
 
   it('prints no filter hint when sources were actually read', async () => {

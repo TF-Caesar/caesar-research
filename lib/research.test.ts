@@ -87,14 +87,35 @@ describe('summarize', () => {
   it('extracts relevant sentences across multiple sources, drops noise', () => {
     const out = summarize(citations, 'Who won the 2022 FIFA World Cup?', 4);
     expect(out.length).toBeGreaterThan(0);
-    expect(out.join(' ')).toMatch(/Argentina/);
-    expect(out.join(' ')).not.toMatch(/gardening/);
+    expect(out.map((s) => s.text).join(' ')).toMatch(/Argentina/);
+    expect(out.map((s) => s.text).join(' ')).not.toMatch(/gardening/);
   });
 
   it('de-duplicates repeated sentences', () => {
     const out = summarize(citations, 'Who won the 2022 FIFA World Cup?', 10);
-    const unique = new Set(out);
+    const unique = new Set(out.map((s) => s.text));
     expect(unique.size).toBe(out.length);
+  });
+
+  it('stamps each item with the 1-based read-list index of its origin citation', () => {
+    // The unread hit sits FIRST so raw rank and read-list position diverge:
+    // formatSources drops it and renumbers, and sourceIndex must agree.
+    const unread: Citation = { rank: 1, title: 'Never read', canonicalUrl: 'https://never.com', docId: 'd0' };
+    const out = summarize([unread, ...citations], 'Who won the 2022 FIFA World Cup?', 10);
+    const fromAp = out.find((s) => /defeating France/.test(s.text));
+    const fromBbc = out.find((s) => /Messi/.test(s.text));
+    expect(fromAp?.sourceIndex).toBe(1);
+    expect(fromBbc?.sourceIndex).toBe(2);
+  });
+
+  it('never cites a search-only citation: a passage on an unread hit yields no bullet', () => {
+    // No captureTime and no text means the source never appears in the Sources
+    // list, so a bullet extracted from it would carry a dangling [n].
+    const passageOnly: Citation[] = [{
+      rank: 1, title: 'Unread', canonicalUrl: 'https://unread.com', docId: 'd1',
+      passage: 'Argentina won the 2022 FIFA World Cup in Qatar after beating France on penalties.',
+    }];
+    expect(summarize(passageOnly, 'Who won the 2022 FIFA World Cup?', 4)).toEqual([]);
   });
 
   it('drops JSON / metadata fragments so they never become a summary bullet', () => {
@@ -105,8 +126,8 @@ describe('summarize', () => {
       text: 'Argentina won the 2022 FIFA World Cup in Qatar after a dramatic final.\n{"event":"2022 FIFA World Cup","winner":"Argentina","fifa_world_cup":true,"id":"abc-123"}\nLionel Messi lifted the trophy for Argentina national team. '.repeat(2),
     }];
     const out = summarize(withJson, 'Who won the 2022 FIFA World Cup?', 5);
-    expect(out.join(' ')).toMatch(/Argentina/);
-    expect(out.join(' ')).not.toMatch(/\{|\}|fifa_world_cup|"winner"/);
+    expect(out.map((s) => s.text).join(' ')).toMatch(/Argentina/);
+    expect(out.map((s) => s.text).join(' ')).not.toMatch(/\{|\}|fifa_world_cup|"winner"/);
   });
 
   it('grounds on full read text (citation.text), not passage alone', () => {
@@ -116,7 +137,7 @@ describe('summarize', () => {
       text: 'Argentina won the 2022 FIFA World Cup in Qatar. '.repeat(6),
     }];
     const out = summarize(noPassage, 'Who won the 2022 World Cup?', 2);
-    expect(out.join(' ')).toMatch(/Argentina/);
+    expect(out.map((s) => s.text).join(' ')).toMatch(/Argentina/);
   });
 
   it('returns empty array when no sentence addresses the question', () => {
@@ -130,7 +151,8 @@ describe('summarize', () => {
       text: 'Argentina won the 2022 FIFA World Cup in Qatar after beating France.',
     }];
     const out = summarize(short, 'Who won the 2022 FIFA World Cup?', 2);
-    expect(out.join(' ')).toMatch(/Argentina/);
+    expect(out.map((s) => s.text).join(' ')).toMatch(/Argentina/);
+    expect(out[0].sourceIndex).toBe(1);
   });
 });
 

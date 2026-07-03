@@ -91,18 +91,33 @@ export function bestSnippet(text: string, question: string, maxLen = 280): strin
   return best.length > maxLen ? best.slice(0, maxLen).replace(/\s+\S*$/, '') + '…' : best;
 }
 
+/** One summary bullet, stamped with the source it was extracted from. */
+export interface SummaryItem {
+  text: string;
+  /**
+   * 1-based position of the origin citation in the READ list: the same
+   * numbering formatSources produces, so an inline [n] always points at
+   * source [n] in the Sources list.
+   */
+  sourceIndex: number;
+}
+
 /**
  * Build a deterministic, evidence-grounded summary: extract the most relevant
  * sentences ACROSS all read texts (not just the top one), de-duplicate, and
- * return the strongest few. Always grounded in citation.text.
+ * return the strongest few, each stamped with its origin source. Only READ
+ * citations may yield bullets: they are the ones formatSources numbers, so a
+ * sourceIndex here can never dangle.
  */
-export function summarize(citations: Citation[], question: string, maxSentences = 4): string[] {
+export function summarize(citations: Citation[], question: string, maxSentences = 4): SummaryItem[] {
   const terms = keyTerms(question);
   const hards = hardTokens(question);
-  const scored: ScoredSentence[] = [];
+  const scored: (ScoredSentence & { sourceIndex: number })[] = [];
   const seen = new Set<string>();
 
-  for (const c of citations) {
+  const read = readCitations(citations);
+  for (let i = 0; i < read.length; i++) {
+    const c = read[i];
     const body = citationBody(c);
     if (!body) continue;
     for (const s of splitSentences(body)) {
@@ -111,12 +126,17 @@ export function summarize(citations: Citation[], question: string, maxSentences 
       const score = scoreSentence(s, terms, hards);
       if (score <= 0) continue;
       seen.add(key);
-      scored.push({ text: s.length > 280 ? s.slice(0, 280).replace(/\s+\S*$/, '') + '…' : s, score, rank: c.rank });
+      scored.push({
+        text: s.length > 280 ? s.slice(0, 280).replace(/\s+\S*$/, '') + '…' : s,
+        score,
+        rank: c.rank,
+        sourceIndex: i + 1,
+      });
     }
   }
 
   scored.sort((a, b) => b.score - a.score || a.rank - b.rank);
-  return scored.slice(0, maxSentences).map((s) => s.text);
+  return scored.slice(0, maxSentences).map((s) => ({ text: s.text, sourceIndex: s.sourceIndex }));
 }
 
 /**
