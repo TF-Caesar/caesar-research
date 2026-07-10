@@ -8,6 +8,13 @@ export interface SearchOptions {
   publishedAfter?: string;
   country?: string;
   language?: string;
+  /**
+   * Caller-provided query rewrites (SearchRequest.search_queries). The FIRST
+   * entry replaces the text sent to the search index; the original query
+   * still drives reranking and passage selection, so rewrites improve recall
+   * without losing the caller's intent.
+   */
+  searchQueries?: string[];
 }
 export interface SearchResultItem {
   rank: number; title: string; canonicalUrl: string; docId: string; snippet?: string; score?: number;
@@ -15,17 +22,53 @@ export interface SearchResultItem {
   publishedAt?: string;
   /** sha256 digest of the captured content — compare across runs to detect a page change without re-reading. */
   contentDigest?: string;
+  /** Which index served this result: 'web' (shared corpus) or 'workspace' (your ingested documents). */
+  index?: string;
 }
 /** The caller's live quota, straight off the response's access block. */
 export interface RateLimitInfo { limitRps?: number; remaining?: number; resetAt?: string; }
 export interface SearchResult { searchId?: string; results: SearchResultItem[]; tier?: string; rateLimit?: RateLimitInfo; }
-export interface ReadOptions { maxChars?: number; query?: string; }
-export interface ReadPassage { passageId?: string; text: string; }
-export interface ReadResult { docId?: string; canonicalUrl?: string; text: string; passages: ReadPassage[]; captureId?: string; captureTime?: string; }
+export interface ReadOptions {
+  maxChars?: number;
+  query?: string;
+  /** Also return the document's capture timeline (one extra include, same call). */
+  includeCaptureHistory?: boolean;
+}
+export interface ReadPassage {
+  passageId?: string;
+  /** Display text, tidied of markdown noise — offsets below do NOT index into this string. */
+  text: string;
+  /**
+   * Character offsets into the RAW captured document text — receipt
+   * coordinates, not display indexes. Best-effort: absent on a document's
+   * first-ever capture (verified live), present on subsequent reads. Render
+   * them only when present.
+   */
+  charStart?: number;
+  charEnd?: number;
+  /** Heading of the section the passage sits under, when the page structure exposes one. */
+  sectionHeading?: string;
+}
+/** One entry in a document's capture timeline. */
+export interface CaptureHistoryEntry { captureId: string; captureTime: string; contentDigest?: string; }
+export interface ReadResult {
+  docId?: string; canonicalUrl?: string; text: string; passages: ReadPassage[]; captureId?: string; captureTime?: string;
+  /** Present when ReadOptions.includeCaptureHistory was set: newest-first capture timeline. */
+  captureHistory?: CaptureHistoryEntry[];
+}
 export interface Citation {
   rank: number; title: string; canonicalUrl: string; docId: string;
   passageId?: string; captureId?: string; captureTime?: string; passage?: string; text?: string; score?: number;
   publishedAt?: string; contentDigest?: string;
+  /** Receipt coordinates of the quoted passage in the RAW captured text (see ReadPassage). */
+  passageStart?: number;
+  passageEnd?: number;
+  /** Section heading the quoted passage sits under, when the page exposes one. */
+  passageSection?: string;
+  /** Which index served the result ('web' | 'workspace'). */
+  index?: string;
+  /** Number of captures Caesar holds for this document (present with includeCaptureHistory). */
+  captureCount?: number;
 }
 export interface FeedbackEvent {
   /** What happened; passage_used (a passage was cited) is the safest automatic signal. */
@@ -185,6 +228,7 @@ export class CaesarClient {
         ...(options.language ? { language: options.language } : {}),
       };
     }
+    if (options.searchQueries?.length) extraBody.search_queries = options.searchQueries;
     const resp: any = await this.requireClient().search(query, {
       maxResults: options.maxResults,
       mode: options.mode,
@@ -198,6 +242,7 @@ export class CaesarClient {
         ...(score != null ? { score } : {}),
         ...(r.metadata?.published_at ? { publishedAt: r.metadata.published_at } : {}),
         ...(r.metadata?.content_digest ? { contentDigest: r.metadata.content_digest } : {}),
+        ...(r.index ? { index: r.index } : {}),
       };
     });
     return { searchId: resp?.search_id, results, ...accessInfo(resp) };
@@ -214,16 +259,30 @@ export class CaesarClient {
     const content: Record<string, unknown> = {
       selection: options.query ? 'query_relevant' : 'full_document',
       format: 'markdown',
+      include_offsets: true, // passages carry char offsets into the captured text — receipt precision for free
       ...(options.maxChars != null ? { max_chars: options.maxChars } : {}),
     };
     const resp: any = await this.requireClient().read(target, {
-      include: ['metadata', 'content', 'passages'],
+      include: ['metadata', 'content', 'passages', ...(options.includeCaptureHistory ? ['capture_history'] : [])],
       ...(options.query ? { query: options.query } : {}),
       extraBody: { content },
     });
     const passages: ReadPassage[] = (resp?.passages ?? [])
-      .map((p: any) => ({ passageId: p.passage_id, text: tidy(p.text ?? '') }))
+      .map((p: any) => ({
+        passageId: p.passage_id,
+        text: tidy(p.text ?? ''),
+        ...(p.char_start != null ? { charStart: p.char_start } : {}),
+        ...(p.char_end != null ? { charEnd: p.char_end } : {}),
+        ...(p.section_heading ? { sectionHeading: p.section_heading } : {}),
+      }))
       .filter((p: ReadPassage) => p.text.length > 0);
+    const captureHistory: CaptureHistoryEntry[] | undefined = options.includeCaptureHistory
+      ? (resp?.capture_history ?? []).map((h: any) => ({
+          captureId: h.capture_id,
+          captureTime: h.capture_time,
+          ...(h.content_digest ? { contentDigest: h.content_digest } : {}),
+        }))
+      : undefined;
     return {
       docId: resp?.doc?.doc_id ?? resp?.doc_id,
       canonicalUrl: resp?.doc?.canonical_url ?? resp?.canonical_url,
@@ -231,14 +290,15 @@ export class CaesarClient {
       passages,
       captureId: resp?.provenance?.capture_id,
       captureTime: resp?.provenance?.capture_time,
+      ...(captureHistory ? { captureHistory } : {}),
     };
   }
 
   async searchAndRead(
     query: string,
-    options: SearchOptions & { readTopN?: number; readMaxChars?: number; minScore?: number } = {},
+    options: SearchOptions & { readTopN?: number; readMaxChars?: number; minScore?: number; includeCaptureHistory?: boolean } = {},
   ): Promise<SearchAndReadResult> {
-    const { readTopN = 3, readMaxChars = 8000, minScore = 0, ...searchOpts } = options;
+    const { readTopN = 3, readMaxChars = 8000, minScore = 0, includeCaptureHistory, ...searchOpts } = options;
     const search = await this.search(query, { maxResults: 10, ...searchOpts });
     // Drop low-confidence / unscored results (gibberish queries return null scores).
     const results = minScore > 0 ? search.results.filter((r) => r.score != null && r.score >= minScore) : search.results;
@@ -250,7 +310,7 @@ export class CaesarClient {
       .filter((r) => { const k = keyOf(r); if (seenKeys.has(k)) return false; seenKeys.add(k); return true; })
       .slice(0, readTopN);
     const reads = await mapLimit(toRead, 3, (r) =>
-      this.read(r.canonicalUrl, { maxChars: readMaxChars, query })
+      this.read(r.canonicalUrl, { maxChars: readMaxChars, query, ...(includeCaptureHistory ? { includeCaptureHistory } : {}) })
         .then((doc) => ({ r, doc })).catch(() => ({ r, doc: null as ReadResult | null })),
     );
     const byDoc = new Map<string, ReadResult | null>();
@@ -269,9 +329,14 @@ export class CaesarClient {
         captureId: doc?.captureId, captureTime: doc?.captureTime,
         passage: displayPassage?.text,
         passageId: displayPassage?.passageId,
+        passageStart: displayPassage?.charStart,
+        passageEnd: displayPassage?.charEnd,
+        passageSection: displayPassage?.sectionHeading,
         text: doc?.text,
         publishedAt: r.publishedAt,
         contentDigest: r.contentDigest,
+        index: r.index,
+        ...(doc?.captureHistory ? { captureCount: doc.captureHistory.length } : {}),
       });
       const body = doc?.text && doc.text.length > 200
         ? doc.text

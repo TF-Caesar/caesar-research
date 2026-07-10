@@ -168,6 +168,15 @@ export interface SourceLine {
   capturedISO?: string;
   /** Best-effort page publish time from Caesar; absent on many pages. */
   publishedAt?: string;
+  /** Section heading the cited passage sits under, when the page exposes one. */
+  passageSection?: string;
+  /**
+   * Character offsets of the cited passage into the RAW captured document
+   * text: receipt coordinates, not display indexes. Best-effort, absent on a
+   * document's first-ever capture, so render them only when present.
+   */
+  passageStart?: number;
+  passageEnd?: number;
 }
 
 /** Format the numbered Sources list from the read citations, numbered from 1. */
@@ -178,5 +187,8 @@ export function formatSources(citations: Citation[]): SourceLine[] {
     url: c.canonicalUrl,
     capturedISO: c.captureTime,
     publishedAt: c.publishedAt,
+    passageSection: c.passageSection,
+    passageStart: c.passageStart,
+    passageEnd: c.passageEnd,
   }));
 }

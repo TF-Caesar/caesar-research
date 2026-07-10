@@ -100,12 +100,18 @@ export function renderBriefing({ question, citations, narrative, now = Date.now(
     out.push('  ' + pc.dim('No sources were read.'));
   } else {
     for (const s of sources) {
-      const captured = s.capturedISO ? `captured ${s.capturedISO}` : 'captured (time unavailable)';
+      const parts: string[] = [];
       const published = publishedDate(s.publishedAt);
-      const stamp = published ? `published ${published} · ${captured}` : captured;
+      if (published) parts.push(`published ${published}`);
+      parts.push(s.capturedISO ? `captured ${s.capturedISO}` : 'captured (time unavailable)');
+      // Passage receipt coordinates: where the quoted passage sits in the
+      // captured text. Best-effort (absent on a first-ever capture), so the
+      // stamp only grows when Caesar actually pinned them.
+      if (s.passageSection) parts.push(`section ${s.passageSection}`);
+      if (s.passageStart != null && s.passageEnd != null) parts.push(`chars ${s.passageStart}-${s.passageEnd}`);
       out.push('  ' + pc.green(`[${s.index}]`) + ' ' + pc.bold(s.title));
       out.push('      ' + pc.cyan(s.url));
-      out.push('      ' + pc.dim(stamp));
+      out.push('      ' + pc.dim(parts.join(' · ')));
     }
     const receipt = receiptLine(sources, now);
     if (receipt) {

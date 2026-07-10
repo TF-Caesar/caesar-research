@@ -16,6 +16,12 @@ interface Args {
   json: boolean;
   domains?: string[];
   after?: string;
+  /**
+   * Caller query rewrites (SearchOptions.searchQueries). The first rewrite
+   * replaces the text the search index sees; the question still drives
+   * reranking and passage selection.
+   */
+  queries?: string[];
 }
 
 /** Thrown by parseArgs on bad input; main turns it into usage + exit code 2. */
@@ -85,6 +91,12 @@ export function parseArgs(argv: string[]): Args {
         args.after = after;
         break;
       }
+      case '--queries': {
+        const queries = value().split(',').map((q) => q.trim()).filter(Boolean);
+        if (queries.length === 0) throw new UsageError('--queries expects a comma-separated list of query rewrites, e.g. --queries "2022 world cup winner,fifa 2022 final result"');
+        args.queries = queries;
+        break;
+      }
       default:
         throw new UsageError(`Unknown flag: ${flag}`);
     }
@@ -103,6 +115,9 @@ ${pc.bold('Options')}  (both "--flag value" and "--flag=value" work)
   --read-top <n>        sources to fully read (default 4)
   --domains <a,b>       comma-separated domains to restrict the search to
   --after <date>        only sources published after this date (e.g. 2026-01-01)
+  --queries "<a,b>"     comma-separated query rewrites: the first replaces what
+                        the search index sees, your question still drives the
+                        reranking and passage selection
   --no-llm              skip optional Anthropic synthesis
   --json                print the briefing as one JSON object on stdout
   -h, --help            show this help
@@ -149,6 +164,7 @@ export async function main(argv: string[]): Promise<number> {
       minScore: 0.3, // drop low-confidence / unscored (gibberish) results
       ...(args.domains ? { includeDomains: args.domains } : {}),
       ...(args.after ? { publishedAfter: args.after } : {}),
+      ...(args.queries ? { searchQueries: args.queries } : {}),
     });
     citations = result.citations;
     resultCount = result.resultCount;

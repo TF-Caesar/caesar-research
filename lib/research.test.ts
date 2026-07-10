@@ -216,4 +216,18 @@ describe('formatSources', () => {
     expect(lines[0].publishedAt).toBe('2026-06-20T08:00:00Z');
     expect(lines[1].publishedAt).toBeUndefined();
   });
+
+  it('carries the passage section and char offsets when the citation pins them', () => {
+    const pinned: Citation = { ...read1, passageSection: 'Pricing', passageStart: 1204, passageEnd: 1377 };
+    const lines = formatSources([pinned]);
+    expect(lines[0]).toMatchObject({ passageSection: 'Pricing', passageStart: 1204, passageEnd: 1377 });
+  });
+
+  it('leaves section and offsets undefined when absent (first-ever capture, or snippet-grade)', () => {
+    const lines = formatSources([read1, readNoTime]);
+    expect(lines[0].passageSection).toBeUndefined();
+    expect(lines[0].passageStart).toBeUndefined();
+    expect(lines[0].passageEnd).toBeUndefined();
+    expect(lines[1].passageEnd).toBeUndefined();
+  });
 });

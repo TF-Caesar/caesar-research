@@ -51,6 +51,19 @@ describe('parseArgs', () => {
     expect(parseArgs(['--after=2026-01-01', 'q']).after).toBe('2026-01-01');
   });
 
+  it('passes --queries through as a trimmed rewrite list (both syntaxes)', () => {
+    expect(parseArgs(['--queries', 'rewrite one,rewrite two', 'q']).queries).toEqual(['rewrite one', 'rewrite two']);
+    expect(parseArgs(['--queries=rewrite one, rewrite two', 'q']).queries).toEqual(['rewrite one', 'rewrite two']);
+    expect(parseArgs(['q']).queries).toBeUndefined();
+  });
+
+  it('rejects --queries with an empty or missing value', () => {
+    expect(() => parseArgs(['--queries=', 'q'])).toThrow(UsageError);
+    expect(() => parseArgs(['--queries=,', 'q'])).toThrow(UsageError);
+    expect(() => parseArgs(['--queries', ' , ', 'q'])).toThrow(UsageError);
+    expect(() => parseArgs(['q', '--queries'])).toThrow(/expects a value/);
+  });
+
   it('parses --no-llm and help flags', () => {
     expect(parseArgs(['--no-llm', 'q']).noLlm).toBe(true);
     expect(parseArgs(['-h']).help).toBe(true);
@@ -159,6 +172,65 @@ describe('main', () => {
     expect(payload.summary[0]).toMatchObject({ sourceIndex: 1 });
     expect(payload.summary[0].text).toMatch(/Argentina/);
     expect(payload.sources[0]).toMatchObject({ index: 1, url: 'https://ap.com/a' });
+  });
+
+  it('sends --queries rewrites to Caesar as searchQueries, keeping the question as the query', async () => {
+    vi.spyOn(process.stdout, 'write').mockImplementation(() => true);
+    vi.spyOn(process.stderr, 'write').mockImplementation(() => true);
+    searchAndReadMock.mockResolvedValue({ searchId: 's', citations: [], resultCount: 0 });
+
+    const code = await main(['--no-llm', '--queries', '2022 world cup winner,fifa 2022 final', 'who won the 2022 world cup']);
+
+    expect(code).toBe(0);
+    // The question stays the query (it drives reranking and passage selection);
+    // the rewrites ride along as searchQueries for the index.
+    expect(searchAndReadMock).toHaveBeenCalledWith(
+      'who won the 2022 world cup',
+      expect.objectContaining({ searchQueries: ['2022 world cup winner', 'fifa 2022 final'] }),
+    );
+  });
+
+  it('omits searchQueries entirely when --queries is not given', async () => {
+    vi.spyOn(process.stdout, 'write').mockImplementation(() => true);
+    vi.spyOn(process.stderr, 'write').mockImplementation(() => true);
+    searchAndReadMock.mockResolvedValue({ searchId: 's', citations: [], resultCount: 0 });
+
+    await main(['--no-llm', 'some question']);
+
+    expect(searchAndReadMock.mock.calls[0][1]).not.toHaveProperty('searchQueries');
+  });
+
+  it('--json sources carry passage section and offsets when pinned, omit them when absent', async () => {
+    const stdoutWrites: string[] = [];
+    vi.spyOn(process.stdout, 'write').mockImplementation((chunk) => { stdoutWrites.push(String(chunk)); return true; });
+    vi.spyOn(process.stderr, 'write').mockImplementation(() => true);
+    searchAndReadMock.mockResolvedValue({
+      searchId: 's',
+      resultCount: 2,
+      citations: [
+        {
+          rank: 1, title: 'Docs', canonicalUrl: 'https://x.com/pricing', docId: 'd1',
+          captureTime: '2026-07-01T00:00:00Z', text: 'The Pro plan costs $49 per month, billed annually. '.repeat(4),
+          passageSection: 'Pricing', passageStart: 1204, passageEnd: 1377,
+        },
+        {
+          rank: 2, title: 'Blog', canonicalUrl: 'https://y.com/post', docId: 'd2',
+          captureTime: '2026-07-01T00:00:00Z', text: 'A first-ever capture: no offsets yet. '.repeat(6),
+        },
+      ],
+    });
+
+    const code = await main(['--json', '--no-llm', 'pro plan price']);
+
+    expect(code).toBe(0);
+    const payload = JSON.parse(stdoutWrites.join(''));
+    expect(payload.sources[0]).toMatchObject({
+      index: 1, passageSection: 'Pricing', passageStart: 1204, passageEnd: 1377,
+    });
+    // Best-effort fields stay absent, not null, so the JSON stays clean.
+    expect(payload.sources[1]).not.toHaveProperty('passageSection');
+    expect(payload.sources[1]).not.toHaveProperty('passageStart');
+    expect(payload.sources[1]).not.toHaveProperty('passageEnd');
   });
 
   it('prints one actionable line and returns 1 when no key is configured', async () => {

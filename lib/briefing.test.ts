@@ -81,6 +81,25 @@ describe('renderBriefing', () => {
     const out = renderBriefing({ question: 'Who won?', citations, now });
     expect(out).toContain('2 sources read · newest capture 2d ago');
   });
+
+  it('appends section and char offsets to the stamp when the passage is pinned', () => {
+    const pinned: Citation[] = [
+      {
+        rank: 1, title: 'Docs', canonicalUrl: 'https://x.com/pricing', docId: 'd1',
+        captureTime: '2026-06-21T14:03:00Z',
+        passageSection: 'Pricing', passageStart: 1204, passageEnd: 1377,
+        text: 'The Pro plan costs $49 per month, billed annually. '.repeat(4),
+      },
+    ];
+    const out = renderBriefing({ question: 'Pro plan price?', citations: pinned });
+    expect(out).toContain('captured 2026-06-21T14:03:00Z · section Pricing · chars 1204-1377');
+  });
+
+  it('keeps the stamp clean when section and offsets are absent (first-ever capture)', () => {
+    const out = renderBriefing({ question: 'Who won the 2022 FIFA World Cup?', citations });
+    expect(out).not.toContain('section ');
+    expect(out).not.toContain('chars ');
+  });
 });
 
 describe('relativeTime', () => {
