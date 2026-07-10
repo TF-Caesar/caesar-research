@@ -177,6 +177,11 @@ export interface SourceLine {
    */
   passageStart?: number;
   passageEnd?: number;
+  /**
+   * Which Caesar index served the result: 'web' or 'workspace'. Named to
+   * avoid colliding with `index`, which is this line's citation number.
+   */
+  searchIndex?: string;
 }
 
 /** Format the numbered Sources list from the read citations, numbered from 1. */
@@ -190,5 +195,6 @@ export function formatSources(citations: Citation[]): SourceLine[] {
     passageSection: c.passageSection,
     passageStart: c.passageStart,
     passageEnd: c.passageEnd,
+    searchIndex: c.index,
   }));
 }

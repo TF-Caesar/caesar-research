@@ -104,6 +104,25 @@ describe('parseArgs', () => {
     expect(() => parseArgs(['--after=', 'q'])).toThrow(UsageError);
     expect(() => parseArgs(['--no-llm=true', 'q'])).toThrow(UsageError);
   });
+
+  it('parses --scope with --workspace-id (both syntaxes), deduplicated', () => {
+    const id = '123e4567-e89b-42d3-a456-426614174000';
+    const a = parseArgs(['--scope', 'web,workspace', '--workspace-id', id, 'q']);
+    expect(a.scope).toEqual(['web', 'workspace']);
+    expect(a.workspaceId).toBe(id);
+    const b = parseArgs([`--scope=workspace,workspace`, `--workspace-id=${id}`, 'q']);
+    expect(b.scope).toEqual(['workspace']);
+  });
+
+  it('rejects invalid scope tokens and mismatched scope/workspace-id combinations', () => {
+    const id = '123e4567-e89b-42d3-a456-426614174000';
+    expect(() => parseArgs(['--scope', 'webz', 'q'])).toThrow(/only "web" and "workspace"/);
+    // workspace scope without an id would 400 at the API; fail before the network.
+    expect(() => parseArgs(['--scope', 'workspace', 'q'])).toThrow(/requires --workspace-id/);
+    // an id without workspace scope would be a silent no-op; reject that too.
+    expect(() => parseArgs(['--workspace-id', id, 'q'])).toThrow(/only applies when --scope includes workspace/);
+    expect(() => parseArgs(['--workspace-id', 'not-a-uuid', '--scope', 'workspace', 'q'])).toThrow(/expects a UUID/);
+  });
 });
 
 describe('main', () => {
@@ -198,6 +217,59 @@ describe('main', () => {
     await main(['--no-llm', 'some question']);
 
     expect(searchAndReadMock.mock.calls[0][1]).not.toHaveProperty('searchQueries');
+  });
+
+  it('sends --scope and --workspace-id through as scopeIndexes and workspaceId', async () => {
+    vi.spyOn(process.stdout, 'write').mockImplementation(() => true);
+    vi.spyOn(process.stderr, 'write').mockImplementation(() => true);
+    searchAndReadMock.mockResolvedValue({ searchId: 's', citations: [], resultCount: 0 });
+
+    const code = await main([
+      '--no-llm', '--scope', 'web,workspace',
+      '--workspace-id', '123e4567-e89b-42d3-a456-426614174000', 'question',
+    ]);
+
+    expect(code).toBe(0);
+    expect(searchAndReadMock).toHaveBeenCalledWith(
+      'question',
+      expect.objectContaining({
+        scopeIndexes: ['web', 'workspace'],
+        workspaceId: '123e4567-e89b-42d3-a456-426614174000',
+      }),
+    );
+  });
+
+  it('omits scope fields entirely when --scope is not given', async () => {
+    vi.spyOn(process.stdout, 'write').mockImplementation(() => true);
+    vi.spyOn(process.stderr, 'write').mockImplementation(() => true);
+    searchAndReadMock.mockResolvedValue({ searchId: 's', citations: [], resultCount: 0 });
+
+    await main(['--no-llm', 'some question']);
+
+    expect(searchAndReadMock.mock.calls[0][1]).not.toHaveProperty('scopeIndexes');
+    expect(searchAndReadMock.mock.calls[0][1]).not.toHaveProperty('workspaceId');
+  });
+
+  it('prints API warnings to stderr and includes them in --json output', async () => {
+    const stderrWrites: string[] = [];
+    const stdoutWrites: string[] = [];
+    vi.spyOn(process.stderr, 'write').mockImplementation((chunk) => { stderrWrites.push(String(chunk)); return true; });
+    vi.spyOn(process.stdout, 'write').mockImplementation((chunk) => { stdoutWrites.push(String(chunk)); return true; });
+    const warning = {
+      code: 'workspace_index_unavailable',
+      message: 'The workspace index is not yet available on this deployment; results are web-only.',
+    };
+    searchAndReadMock.mockResolvedValue({ searchId: 's', citations: [], resultCount: 0, warnings: [warning] });
+
+    const code = await main([
+      '--no-llm', '--json', '--scope', 'workspace',
+      '--workspace-id', '123e4567-e89b-42d3-a456-426614174000', 'question',
+    ]);
+
+    expect(code).toBe(0);
+    expect(stderrWrites.join('')).toContain('results are web-only');
+    const payload = JSON.parse(stdoutWrites.join(''));
+    expect(payload.warnings).toEqual([warning]);
   });
 
   it('--json sources carry passage section and offsets when pinned, omit them when absent', async () => {

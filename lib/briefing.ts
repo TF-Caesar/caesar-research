@@ -109,6 +109,9 @@ export function renderBriefing({ question, citations, narrative, now = Date.now(
       // stamp only grows when Caesar actually pinned them.
       if (s.passageSection) parts.push(`section ${s.passageSection}`);
       if (s.passageStart != null && s.passageEnd != null) parts.push(`chars ${s.passageStart}-${s.passageEnd}`);
+      // Web is the norm; mark only sources served from another index, so a
+      // workspace document reads as YOUR document, not a web page.
+      if (s.searchIndex && s.searchIndex !== 'web') parts.push(s.searchIndex);
       out.push('  ' + pc.green(`[${s.index}]`) + ' ' + pc.bold(s.title));
       out.push('      ' + pc.cyan(s.url));
       out.push('      ' + pc.dim(parts.join(' · ')));

@@ -15,7 +15,19 @@ export interface SearchOptions {
    * without losing the caller's intent.
    */
   searchQueries?: string[];
+  /**
+   * Which indexes to search (SearchRequest.scope): 'web' (default) and/or
+   * 'workspace' (your organization's ingested documents). workspaceId is
+   * required whenever indexes includes 'workspace' (the API 400s without it).
+   * Deployments without workspace federation fall back to web-only and say so
+   * via a workspace_index_unavailable warning (see SearchResult.warnings).
+   */
+  scopeIndexes?: ('web' | 'workspace')[];
+  workspaceId?: string;
 }
+
+/** A structured warning the API attached to an otherwise-successful response. */
+export interface CaesarWarning { code: string; message: string; }
 export interface SearchResultItem {
   rank: number; title: string; canonicalUrl: string; docId: string; snippet?: string; score?: number;
   /** Best-effort publication date parsed by Caesar from source metadata (RFC3339); often absent on older pages. */
@@ -27,7 +39,11 @@ export interface SearchResultItem {
 }
 /** The caller's live quota, straight off the response's access block. */
 export interface RateLimitInfo { limitRps?: number; remaining?: number; resetAt?: string; }
-export interface SearchResult { searchId?: string; results: SearchResultItem[]; tier?: string; rateLimit?: RateLimitInfo; }
+export interface SearchResult {
+  searchId?: string; results: SearchResultItem[]; tier?: string; rateLimit?: RateLimitInfo;
+  /** Structured warnings from the API (e.g. workspace_index_unavailable) — surface them, they change what the results mean. */
+  warnings?: CaesarWarning[];
+}
 export interface ReadOptions {
   maxChars?: number;
   query?: string;
@@ -89,6 +105,8 @@ export interface SearchAndReadResult {
   resultCount: number;
   tier?: string;
   rateLimit?: RateLimitInfo;
+  /** Structured warnings from the search (e.g. workspace_index_unavailable) — they change what the results mean. */
+  warnings?: CaesarWarning[];
 }
 
 const DEFAULT_BASE_URL = 'https://alpha.api.trycaesar.com';
@@ -230,6 +248,12 @@ export class CaesarClient {
       };
     }
     if (options.searchQueries?.length) extraBody.search_queries = options.searchQueries;
+    if (options.scopeIndexes?.length) {
+      extraBody.scope = {
+        indexes: options.scopeIndexes,
+        ...(options.workspaceId ? { workspace_id: options.workspaceId } : {}),
+      };
+    }
     const resp: any = await this.requireClient().search(query, {
       maxResults: options.maxResults,
       mode: options.mode,
@@ -246,7 +270,10 @@ export class CaesarClient {
         ...(r.index ? { index: r.index } : {}),
       };
     });
-    return { searchId: resp?.search_id, results, ...accessInfo(resp) };
+    const warnings: CaesarWarning[] = (resp?.warnings ?? [])
+      .filter((w: any) => w?.code && w?.message)
+      .map((w: any) => ({ code: w.code, message: w.message }));
+    return { searchId: resp?.search_id, results, ...accessInfo(resp), ...(warnings.length ? { warnings } : {}) };
   }
 
   async read(target: string, options: ReadOptions = {}): Promise<ReadResult> {
@@ -347,6 +374,7 @@ export class CaesarClient {
     return {
       evidence: blocks.join('\n\n'), citations, searchId: search.searchId, resultCount: search.results.length,
       tier: search.tier, rateLimit: search.rateLimit,
+      ...(search.warnings ? { warnings: search.warnings } : {}),
     };
   }
 

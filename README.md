@@ -42,8 +42,10 @@ Flags (every flag accepts both `--flag value` and `--flag=value`; an unknown or 
 | `--domains <a.com,b.com>` | restrict the search to these domains | all domains |
 | `--after <YYYY-MM-DD>` | only sources published after this date | any time |
 | `--queries "<a,b>"` | comma-separated query rewrites: the first replaces the text the search index sees, while your question still drives reranking and passage selection | the question as-is |
+| `--scope <web,workspace>` | which Caesar indexes to search: the web corpus and/or your organization's ingested documents | web |
+| `--workspace-id <uuid>` | the workspace to search; required when `--scope` includes `workspace` | |
 | `--no-llm` | skip synthesis even if a key is set | off |
-| `--json` | print one JSON object (`question`, `summary`, `sources`, `narrative`, `resultCount`, `tier`) to stdout, nothing else: pipe it straight into `jq` | off |
+| `--json` | print one JSON object (`question`, `summary`, `sources`, `narrative`, `resultCount`, `tier`, plus `warnings` when the API attached any) to stdout, nothing else: pipe it straight into `jq` | off |
 | `-h, --help` | show help | |
 
 ## How it works
@@ -59,6 +61,16 @@ The briefing has three parts:
 3. **Sources** — numbered, each with title, URL, and `captured <ISO time>`. When Caesar pins the quoted passage, the stamp also names the section heading it sits under and its character offsets into the captured document text (`section Pricing · chars 1204-1377`), so a receipt points at the exact spot, not just the page. Offsets are best-effort: they are absent on a document's first-ever capture, and the line stays clean without them.
 
 When you know how the answer is phrased on the page, `--queries` lets you rewrite what the search index sees without losing your intent: the first rewrite replaces the index text, but your original question still ranks the results and picks the passages. Useful when the question and the source vocabulary diverge, for example `--queries "Pro plan pricing"` for the question "how much does the paid tier cost".
+
+## Research over your own documents
+
+Caesar can search your organization's ingested documents alongside the web. Point the tool at a workspace and the same briefing pipeline runs over both indexes, with workspace sources marked in the Sources list so your document never masquerades as a web page:
+
+```bash
+caesar-research "what did we decide about pricing" --scope web,workspace --workspace-id <your-workspace-uuid>
+```
+
+Honest by design: on deployments where the workspace index is not yet federated, Caesar answers with web results and attaches a warning saying so. The CLI prints that note rather than letting web results pass as your documents, and `--json` carries the same warning structurally.
 
 ## License
 

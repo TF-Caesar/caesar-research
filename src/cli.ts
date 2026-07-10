@@ -22,6 +22,12 @@ interface Args {
    * reranking and passage selection.
    */
   queries?: string[];
+  /**
+   * Which Caesar indexes to search: web (default) and/or workspace (your
+   * organization's ingested documents). workspace requires --workspace-id.
+   */
+  scope?: ('web' | 'workspace')[];
+  workspaceId?: string;
 }
 
 /** Thrown by parseArgs on bad input; main turns it into usage + exit code 2. */
@@ -97,11 +103,37 @@ export function parseArgs(argv: string[]): Args {
         args.queries = queries;
         break;
       }
+      case '--scope': {
+        const tokens = value().split(',').map((s) => s.trim().toLowerCase()).filter(Boolean);
+        if (tokens.length === 0) throw new UsageError('--scope expects a comma-separated list, e.g. --scope web,workspace');
+        for (const t of tokens) {
+          if (t !== 'web' && t !== 'workspace') throw new UsageError(`--scope accepts only "web" and "workspace", got "${t}"`);
+        }
+        args.scope = [...new Set(tokens)] as ('web' | 'workspace')[];
+        break;
+      }
+      case '--workspace-id': {
+        const id = value().trim();
+        // Mirror the API's format so a typo fails here, before spending a search.
+        if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(id)) {
+          throw new UsageError('--workspace-id expects a UUID, e.g. --workspace-id 123e4567-e89b-42d3-a456-426614174000');
+        }
+        args.workspaceId = id;
+        break;
+      }
       default:
         throw new UsageError(`Unknown flag: ${flag}`);
     }
   }
   args.question = rest.join(' ').trim();
+  // Mirror the server's rule locally (it 400s on this) so the failure is
+  // instant and costs nothing; the inverse is a silent no-op, so reject it too.
+  if (args.scope?.includes('workspace') && !args.workspaceId) {
+    throw new UsageError('--scope workspace requires --workspace-id <uuid>');
+  }
+  if (args.workspaceId && !args.scope?.includes('workspace')) {
+    throw new UsageError('--workspace-id only applies when --scope includes workspace');
+  }
   return args;
 }
 
@@ -118,6 +150,9 @@ ${pc.bold('Options')}  (both "--flag value" and "--flag=value" work)
   --queries "<a,b>"     comma-separated query rewrites: the first replaces what
                         the search index sees, your question still drives the
                         reranking and passage selection
+  --scope <a,b>         indexes to search: web (default) and/or workspace, your
+                        organization's ingested documents
+  --workspace-id <uuid> the workspace to search; required with --scope workspace
   --no-llm              skip optional Anthropic synthesis
   --json                print the briefing as one JSON object on stdout
   -h, --help            show this help
@@ -156,6 +191,7 @@ export async function main(argv: string[]): Promise<number> {
   let citations;
   let resultCount = 0;
   let tier: string | undefined;
+  let warnings: { code: string; message: string }[] = [];
   try {
     const result = await client.searchAndRead(args.question, {
       maxResults: args.maxResults,
@@ -165,10 +201,13 @@ export async function main(argv: string[]): Promise<number> {
       ...(args.domains ? { includeDomains: args.domains } : {}),
       ...(args.after ? { publishedAfter: args.after } : {}),
       ...(args.queries ? { searchQueries: args.queries } : {}),
+      ...(args.scope ? { scopeIndexes: args.scope } : {}),
+      ...(args.workspaceId ? { workspaceId: args.workspaceId } : {}),
     });
     citations = result.citations;
     resultCount = result.resultCount;
     tier = result.tier;
+    warnings = result.warnings ?? [];
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
     switch (classifyCaesarError(err)) {
@@ -194,6 +233,13 @@ export async function main(argv: string[]): Promise<number> {
         process.stderr.write(pc.red(`Caesar request failed: ${msg}\n`));
         return 2;
     }
+  }
+
+  // The API attaches structured warnings to otherwise-successful responses
+  // (e.g. workspace_index_unavailable: scoped search fell back to web-only).
+  // They change what the results MEAN, so they are never swallowed.
+  for (const w of warnings) {
+    process.stderr.write(pc.yellow(`note: ${w.message}\n`));
   }
 
   // OPTIONAL synthesis: never required; null on no-key or any failure.
@@ -224,6 +270,7 @@ export async function main(argv: string[]): Promise<number> {
       // The public API is keyed-only: a response that omitted its access block
       // still came from a keyed call.
       tier: tier ?? 'keyed',
+      ...(warnings.length ? { warnings } : {}),
     };
     process.stdout.write(JSON.stringify(payload, null, 2) + '\n');
     return 0;
