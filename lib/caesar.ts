@@ -40,9 +40,10 @@ export interface ReadPassage {
   text: string;
   /**
    * Character offsets into the RAW captured document text — receipt
-   * coordinates, not display indexes. Best-effort: absent on a document's
-   * first-ever capture (verified live), present on subsequent reads. Render
-   * them only when present.
+   * coordinates, not display indexes. Best-effort PER REQUEST: observed live
+   * to come and go for the same document with identical parameters (absent on
+   * fresh captures and intermittently otherwise). Never assume them; render
+   * only when present.
    */
   charStart?: number;
   charEnd?: number;
