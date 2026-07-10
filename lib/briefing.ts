@@ -115,7 +115,7 @@ export function renderBriefing({ question, citations, narrative, now = Date.now(
   }
 
   out.push(rule());
-  out.push(pc.dim('Powered by Caesar search — free, no signup.'));
+  out.push(pc.dim('Powered by Caesar search: https://trycaesar.com'));
   out.push('');
   return out.join('\n');
 }

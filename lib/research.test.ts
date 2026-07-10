@@ -131,7 +131,7 @@ describe('summarize', () => {
   });
 
   it('grounds on full read text (citation.text), not passage alone', () => {
-    // Anonymous tier: no passages, only text. summarize must still work.
+    // Some reads return no passages, only text. summarize must still work.
     const noPassage: Citation[] = [{
       rank: 1, title: 'Src', canonicalUrl: 'https://x.com', docId: 'd1',
       text: 'Argentina won the 2022 FIFA World Cup in Qatar. '.repeat(6),

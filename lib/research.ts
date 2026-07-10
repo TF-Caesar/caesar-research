@@ -3,9 +3,9 @@ import type { Citation } from './caesar.js';
 /**
  * Deterministic, evidence-grounded summarization for the research briefing.
  *
- * Caesar's anonymous read() returns content.text but usually NO structured
- * passages — so we score and extract sentences from the FULL read text
- * (citation.text), never relying on citation.passage alone.
+ * Caesar's read() sometimes returns content.text with NO structured passages,
+ * so we score and extract sentences from the FULL read text (citation.text),
+ * never relying on citation.passage alone.
  *
  * The snippet scorer is ported from caesar-verifier/lib/verify.ts (bestSnippet):
  * key terms drive overlap, "hard tokens" (numbers/dates/acronyms) are weighted.
@@ -142,8 +142,8 @@ export function summarize(citations: Citation[], question: string, maxSentences 
 /**
  * The evidence body for one citation: prefer the full read text when it is
  * substantial, else the query-relevant passage, else the short-but-real text
- * itself. A successfully read page of 200 chars or less still counts (on the
- * anonymous tier passages are often absent, so it may be all we have).
+ * itself. A successfully read page of 200 chars or less still counts (passages
+ * are sometimes absent, so it may be all we have).
  */
 export function citationBody(c: Citation): string {
   return c.text && c.text.length > 200 ? c.text : (c.passage || c.text || '');

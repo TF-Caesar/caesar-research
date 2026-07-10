@@ -92,7 +92,27 @@ function accessInfo(resp: any): { tier?: string; rateLimit?: RateLimitInfo } {
   };
 }
 
-/** Run `fn` over `items` with at most `limit` in flight — the anonymous tier rate-limits aggressive fan-out. */
+/**
+ * Failure classes callers can branch messaging on. Duck-typed off the SDK
+ * error shape (statusCode/code) rather than instanceof, so it stays correct
+ * when tests mock the caesar-search module.
+ */
+export type CaesarFailure = 'not_configured' | 'auth' | 'balance' | 'rate_limited' | 'other';
+
+export function classifyCaesarError(err: unknown): CaesarFailure {
+  const e = err as { statusCode?: number; code?: string; message?: string } | null;
+  if (!e) return 'other';
+  if (e.message === NOT_CONFIGURED_MESSAGE || e.code === 'missing_api_key') return 'not_configured';
+  if (e.statusCode === 402 || e.code === 'insufficient_balance') return 'balance';
+  if (e.statusCode === 401 || e.statusCode === 403) return 'auth';
+  if (e.statusCode === 429) return 'rate_limited';
+  return 'other';
+}
+
+const NOT_CONFIGURED_MESSAGE =
+  'Caesar API key not configured: set CAESAR_SEARCH_API_KEY (or CAESAR_API_KEY)';
+
+/** Run `fn` over `items` with at most `limit` in flight — Caesar rate-limits aggressive fan-out. */
 export async function mapLimit<T, R>(items: T[], limit: number, fn: (item: T) => Promise<R>): Promise<R[]> {
   const out: R[] = new Array(items.length);
   let next = 0;
@@ -108,24 +128,42 @@ export async function mapLimit<T, R>(items: T[], limit: number, fn: (item: T) =>
 }
 
 export class CaesarClient {
-  private client: Caesar;
+  private client: Caesar | null;
+  /** True when a Caesar API key is configured. The public API is keyed-only. */
   readonly keyed: boolean;
 
   constructor(opts: { apiKey?: string; baseUrl?: string; timeoutMs?: number; maxRetries?: number } = {}) {
     // Also honor the SDK's own CAESAR_API_KEY env fallback, so `keyed` can't
-    // report anonymous while the SDK actually sends a key.
+    // report unconfigured while the SDK would actually send a key.
     const apiKey = opts.apiKey ?? process.env.CAESAR_SEARCH_API_KEY ?? process.env.CAESAR_API_KEY;
     const baseUrl = opts.baseUrl ?? process.env.CAESAR_SEARCH_BASE_URL ?? DEFAULT_BASE_URL;
     this.keyed = Boolean(apiKey);
-    // apiKey omitted -> the SDK uses Caesar's anonymous tier (lower rate limit).
     // timeoutMs/maxRetries pass through to the SDK (defaults: 30s, 3 retries);
     // interactive callers should lower them so a throttled call fails fast.
-    this.client = new Caesar({
-      apiKey,
-      baseUrl,
-      ...(opts.timeoutMs != null ? { timeoutMs: opts.timeoutMs } : {}),
-      ...(opts.maxRetries != null ? { maxRetries: opts.maxRetries } : {}),
-    });
+    //
+    // caesar-search 0.2.0 THROWS MissingAPIKeyError at construction when no
+    // key is set against the public API (anonymous access was removed). Defer
+    // that failure to the first call instead: route handlers and CLIs construct
+    // this client eagerly, and an unconfigured deployment should degrade
+    // through their normal fallback paths, not crash at import/startup.
+    let client: Caesar | null = null;
+    try {
+      client = new Caesar({
+        apiKey,
+        baseUrl,
+        ...(opts.timeoutMs != null ? { timeoutMs: opts.timeoutMs } : {}),
+        ...(opts.maxRetries != null ? { maxRetries: opts.maxRetries } : {}),
+      });
+    } catch {
+      client = null; // no key: every call will throw not_configured lazily
+    }
+    this.client = client;
+  }
+
+  /** The SDK client, or a thrown not_configured error callers can classify. */
+  private requireClient(): Caesar {
+    if (!this.client) throw new Error(NOT_CONFIGURED_MESSAGE);
+    return this.client;
   }
 
   async search(query: string, options: SearchOptions = {}): Promise<SearchResult> {
@@ -147,7 +185,7 @@ export class CaesarClient {
         ...(options.language ? { language: options.language } : {}),
       };
     }
-    const resp: any = await this.client.search(query, {
+    const resp: any = await this.requireClient().search(query, {
       maxResults: options.maxResults,
       mode: options.mode,
       verbosity: 'standard', // ensure results carry a relevance score (for minScore filtering)
@@ -166,13 +204,22 @@ export class CaesarClient {
   }
 
   async read(target: string, options: ReadOptions = {}): Promise<ReadResult> {
-    // The SDK defaults `include` to ['metadata','content'] (NO passages) and picks
-    // content.selection from query presence (query -> query_relevant, else
-    // full_document). We ask for passages explicitly; query/maxChars are native.
-    const resp: any = await this.client.read(target, {
+    // The SDK defaults `include` to ['metadata','content'] (NO passages), so we
+    // ask for passages explicitly. Since 0.2.0 the SDK also hardcodes
+    // content.selection to full_document, so we pass the WHOLE content object
+    // through extraBody (its top-level Object.assign replaces `content`
+    // wholesale) to keep the behavior this portfolio was tuned on: with a
+    // query, content.text and passages are selected for relevance to it.
+    // max_chars must live inside our content object for the same reason.
+    const content: Record<string, unknown> = {
+      selection: options.query ? 'query_relevant' : 'full_document',
+      format: 'markdown',
+      ...(options.maxChars != null ? { max_chars: options.maxChars } : {}),
+    };
+    const resp: any = await this.requireClient().read(target, {
       include: ['metadata', 'content', 'passages'],
       ...(options.query ? { query: options.query } : {}),
-      ...(options.maxChars != null ? { maxChars: options.maxChars } : {}),
+      extraBody: { content },
     });
     const passages: ReadPassage[] = (resp?.passages ?? [])
       .map((p: any) => ({ passageId: p.passage_id, text: tidy(p.text ?? '') }))
@@ -196,7 +243,7 @@ export class CaesarClient {
     // Drop low-confidence / unscored results (gibberish queries return null scores).
     const results = minScore > 0 ? search.results.filter((r) => r.score != null && r.score >= minScore) : search.results;
     // Read each document once (search can surface the same doc under two ranks),
-    // and cap concurrency — parallel bursts self-induce 429s on the anonymous tier.
+    // and cap concurrency — parallel bursts self-induce 429s.
     const keyOf = (r: SearchResultItem) => r.docId ?? r.canonicalUrl;
     const seenKeys = new Set<string>();
     const toRead = results
@@ -244,9 +291,11 @@ export class CaesarClient {
    * feedback call must never affect what the user sees.
    */
   sendFeedback(event: FeedbackEvent): void {
+    if (!this.client) return; // unconfigured: nothing to send, never throw
     const { eventType, searchId, docId, passageId, rank, query, notes } = event;
+    const client = this.client;
     void Promise.resolve()
-      .then(() => (this.client as any).feedback(eventType, {
+      .then(() => (client as any).feedback(eventType, {
         ...(searchId ? { search_id: searchId } : {}),
         ...(docId ? { doc_id: docId } : {}),
         ...(passageId ? { passage_id: passageId } : {}),

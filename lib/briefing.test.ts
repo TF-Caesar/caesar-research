@@ -30,7 +30,7 @@ describe('renderBriefing', () => {
     expect(out).toContain('captured 2026-06-21T14:03:00Z');
     expect(out).toContain('[2] BBC');
     expect(out).toContain('captured (time unavailable)');
-    expect(out).toContain('Powered by Caesar search — free, no signup.');
+    expect(out).toContain('Powered by Caesar search: https://trycaesar.com');
   });
 
   it('suffixes each deterministic bullet with the [n] of its origin source', () => {

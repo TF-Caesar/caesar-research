@@ -6,12 +6,13 @@ Ask a question. Get a cited, evidence-grounded briefing — pulled from **live w
 git clone https://github.com/TF-Caesar/caesar-research
 cd caesar-research
 npm install && npm run build
+export CAESAR_SEARCH_API_KEY="your-key"  # new accounts include $1,000 in credits: https://trycaesar.com
 node dist/cli.js "who won the 2022 FIFA World Cup"
 ```
 
-Free. No signup. No API key. **Powered by [Caesar](https://trycaesar.com) search — free, no signup.**
+**Powered by [Caesar](https://trycaesar.com) search.** You need a Caesar API key; new accounts include $1,000 in credits.
 
-Once the package is published to npm, the whole quick start collapses to a one-liner:
+Once the package is published to npm, the clone-and-build steps collapse to a one-liner (the key export stays):
 
 ```bash
 npx caesar-research "who won the 2022 FIFA World Cup"
@@ -27,12 +28,10 @@ By default the summary is **deterministic** — it extracts the most question-re
 
 ## Options
 
-No keys required — it runs on Caesar's free anonymous tier.
+Environment variables:
 
-Optional environment variables:
-
-- `CAESAR_SEARCH_API_KEY` — a Caesar key for higher rate limits (keyless by default).
-- `CAESAR_RESEARCH_LLM_KEY` — an Anthropic key to synthesize a narrative answer (off by default; deterministic otherwise).
+- `CAESAR_SEARCH_API_KEY` (required): your Caesar API key. The SDK's own `CAESAR_API_KEY` fallback works too. New accounts include $1,000 in credits at [trycaesar.com](https://trycaesar.com).
+- `CAESAR_RESEARCH_LLM_KEY` (optional): an Anthropic key to synthesize a narrative answer (off by default; deterministic otherwise).
 
 Flags (every flag accepts both `--flag value` and `--flag=value`; an unknown or malformed flag errors instead of silently joining the question):
 
@@ -50,7 +49,7 @@ Flags (every flag accepts both `--flag value` and `--flag=value`; an unknown or 
 
 `searchAndRead` the question (search the web, then read the top sources) → score and extract the most relevant sentences from the **full captured text** of each source → print a clean, cited briefing.
 
-A Caesar detail worth knowing: on the anonymous tier, `read()` returns the page text but usually **no structured passages** — so this tool always grounds and extracts against the full read text, never relying on a passage object alone. The entire Caesar integration is one small, dependency-light file you can copy into your own project: [`lib/caesar.ts`](lib/caesar.ts).
+A Caesar detail worth knowing: `read()` sometimes returns the page text with **no structured passages**, so this tool always grounds and extracts against the full read text, never relying on a passage object alone. The entire Caesar integration is one small, dependency-light file you can copy into your own project: [`lib/caesar.ts`](lib/caesar.ts).
 
 The briefing has three parts:
 

@@ -2,7 +2,7 @@
 import { realpathSync } from 'node:fs';
 import { pathToFileURL } from 'node:url';
 import pc from 'picocolors';
-import { createCaesarClient } from '../lib/caesar.js';
+import { classifyCaesarError, createCaesarClient } from '../lib/caesar.js';
 import { renderBriefing } from '../lib/briefing.js';
 import { formatSources, readCitations, summarize } from '../lib/research.js';
 import { synthesize } from '../lib/synthesize.js';
@@ -93,7 +93,7 @@ export function parseArgs(argv: string[]): Args {
   return args;
 }
 
-const HELP = `${pc.bold(pc.green('caesar-research'))}: a keyless CLI research agent
+const HELP = `${pc.bold(pc.green('caesar-research'))}: a CLI research agent with receipts
 
 ${pc.bold('Usage')}
   caesar-research "<question>"
@@ -107,11 +107,11 @@ ${pc.bold('Options')}  (both "--flag value" and "--flag=value" work)
   --json                print the briefing as one JSON object on stdout
   -h, --help            show this help
 
-${pc.bold('Environment')} (all optional)
-  CAESAR_SEARCH_API_KEY    higher rate limits on Caesar (keyless by default)
-  CAESAR_RESEARCH_LLM_KEY  Anthropic key for a synthesized narrative answer
+${pc.bold('Environment')}
+  CAESAR_SEARCH_API_KEY    Caesar API key, required (CAESAR_API_KEY works too)
+  CAESAR_RESEARCH_LLM_KEY  optional Anthropic key for a synthesized narrative answer
 
-${pc.dim('Powered by Caesar search: free, no signup.')}
+${pc.dim('Powered by Caesar search. New accounts include $1,000 in credits: https://trycaesar.com')}
 `;
 
 export async function main(argv: string[]): Promise<number> {
@@ -134,7 +134,9 @@ export async function main(argv: string[]): Promise<number> {
   }
 
   const client = createCaesarClient();
-  process.stderr.write(pc.dim(`Searching Caesar${client.keyed ? '' : ' (anonymous tier)'}…\n`));
+  // An unconfigured client throws on the first call, so skip the progress line
+  // when we already know the search cannot start.
+  if (client.keyed) process.stderr.write(pc.dim('Searching Caesar…\n'));
 
   let citations;
   let resultCount = 0;
@@ -153,11 +155,29 @@ export async function main(argv: string[]): Promise<number> {
     tier = result.tier;
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
-    process.stderr.write(pc.red(`Caesar request failed: ${msg}\n`));
-    if (/429|rate|throttl/i.test(msg)) {
-      process.stderr.write(pc.dim('The anonymous tier throttled this request. Try again shortly, or set CAESAR_SEARCH_API_KEY.\n'));
+    switch (classifyCaesarError(err)) {
+      case 'not_configured':
+        // ONE actionable line, no stack trace: the operator needs a key, nothing else.
+        process.stderr.write(pc.red(
+          'Caesar API key required: set CAESAR_SEARCH_API_KEY (or CAESAR_API_KEY). New accounts include $1,000 in credits at https://trycaesar.com\n',
+        ));
+        return 1;
+      case 'auth':
+        process.stderr.write(pc.red(`Caesar rejected the API key: ${msg}\n`));
+        process.stderr.write(pc.dim('Check CAESAR_SEARCH_API_KEY, or get a key at https://trycaesar.com.\n'));
+        return 2;
+      case 'balance':
+        process.stderr.write(pc.red(`Caesar account balance exhausted: ${msg}\n`));
+        process.stderr.write(pc.dim('Top up at https://trycaesar.com.\n'));
+        return 2;
+      case 'rate_limited':
+        process.stderr.write(pc.red(`Caesar request failed: ${msg}\n`));
+        process.stderr.write(pc.dim('Caesar throttled this request. Try again shortly.\n'));
+        return 2;
+      default:
+        process.stderr.write(pc.red(`Caesar request failed: ${msg}\n`));
+        return 2;
     }
-    return 2;
   }
 
   // OPTIONAL synthesis: never required; null on no-key or any failure.
@@ -171,7 +191,7 @@ export async function main(argv: string[]): Promise<number> {
   // Without this, "No sources were read." reads like the topic has no coverage.
   if (resultCount > 0 && readCitations(citations).length === 0) {
     process.stderr.write(pc.dim(
-      `Caesar found ${resultCount} result(s), but none passed the score floor or could be read (the free tier may be busy). Try again shortly${args.domains || args.after ? ', or relax --domains/--after' : ''}.\n`,
+      `Caesar found ${resultCount} result(s), but none passed the score floor or could be read. Try again shortly${args.domains || args.after ? ', or relax --domains/--after' : ''}.\n`,
     ));
   }
 
@@ -185,7 +205,9 @@ export async function main(argv: string[]): Promise<number> {
       sources: formatSources(citations),
       narrative,
       resultCount,
-      tier: tier ?? (client.keyed ? 'keyed' : 'anonymous'),
+      // The public API is keyed-only: a response that omitted its access block
+      // still came from a keyed call.
+      tier: tier ?? 'keyed',
     };
     process.stdout.write(JSON.stringify(payload, null, 2) + '\n');
     return 0;

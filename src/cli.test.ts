@@ -1,10 +1,15 @@
 import { describe, it, expect, vi, afterEach } from 'vitest';
 
-// Stub the Caesar client so main() tests never touch the network.
+// Stub the Caesar client so main() tests never touch the network. The real
+// classifyCaesarError is kept so main's error branching is exercised for real.
 const { searchAndReadMock } = vi.hoisted(() => ({ searchAndReadMock: vi.fn() }));
-vi.mock('../lib/caesar.js', () => ({
-  createCaesarClient: () => ({ keyed: false, searchAndRead: searchAndReadMock }),
-}));
+vi.mock('../lib/caesar.js', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../lib/caesar.js')>();
+  return {
+    ...actual,
+    createCaesarClient: () => ({ keyed: true, searchAndRead: searchAndReadMock }),
+  };
+});
 
 // Importing the module must NOT start the CLI: cli.ts guards main() behind an
 // invoked-as-script check, so this import is side-effect free.
@@ -148,12 +153,43 @@ describe('main', () => {
     expect(Object.keys(payload).sort()).toEqual(['narrative', 'question', 'resultCount', 'sources', 'summary', 'tier']);
     expect(payload.question).toBe('who won the 2022 FIFA World Cup');
     expect(payload.resultCount).toBe(3);
-    expect(payload.tier).toBe('anonymous');
+    expect(payload.tier).toBe('keyed');
     expect(payload.narrative).toBeNull();
     expect(payload.summary.length).toBeGreaterThan(0);
     expect(payload.summary[0]).toMatchObject({ sourceIndex: 1 });
     expect(payload.summary[0].text).toMatch(/Argentina/);
     expect(payload.sources[0]).toMatchObject({ index: 1, url: 'https://ap.com/a' });
+  });
+
+  it('prints one actionable line and returns 1 when no key is configured', async () => {
+    const stderr = vi.spyOn(process.stderr, 'write').mockImplementation(() => true);
+    vi.spyOn(process.stdout, 'write').mockImplementation(() => true);
+    // The shape an unconfigured client throws on its first call.
+    searchAndReadMock.mockRejectedValue(Object.assign(
+      new Error('Caesar API key not configured: set CAESAR_SEARCH_API_KEY (or CAESAR_API_KEY)'),
+      { code: 'missing_api_key' },
+    ));
+
+    const code = await main(['some question']);
+
+    expect(code).toBe(1);
+    const err = stderr.mock.calls.map((c) => String(c[0])).join('');
+    expect(err).toContain('CAESAR_SEARCH_API_KEY');
+    expect(err).toContain('$1,000');
+    expect(err).toContain('https://trycaesar.com');
+    expect(err).not.toContain('    at '); // one line, no stack trace
+  });
+
+  it('returns 2 with a retry hint when Caesar throttles the request', async () => {
+    const stderr = vi.spyOn(process.stderr, 'write').mockImplementation(() => true);
+    vi.spyOn(process.stdout, 'write').mockImplementation(() => true);
+    searchAndReadMock.mockRejectedValue(Object.assign(new Error('too many requests'), { statusCode: 429 }));
+
+    const code = await main(['some question']);
+
+    expect(code).toBe(2);
+    const err = stderr.mock.calls.map((c) => String(c[0])).join('');
+    expect(err).toContain('Try again shortly');
   });
 
   it('prints no filter hint when sources were actually read', async () => {
